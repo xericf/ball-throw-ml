@@ -84,7 +84,9 @@ def run_policy(env, viewer, model, n_episodes=20, vec_normalize=None):
     """Query a trained policy for the throw action and visualise each episode."""
     for i in range(n_episodes):
         obs, _ = env.reset()
-        policy_obs = vec_normalize.normalize_obs(obs) if vec_normalize is not None else obs
+        policy_obs = (
+            vec_normalize.normalize_obs(obs) if vec_normalize is not None else obs
+        )
         action, _ = model.predict(policy_obs, deterministic=True)
         label = (
             f"policy throw {i + 1}/{n_episodes} -> "
@@ -138,7 +140,7 @@ def main():
         type=str,
         default=None,
         help="Path to the matching VecNormalize .pkl (auto-detected as "
-        "models/<run_name>_vecnormalize.pkl if --model path ends in _final/_best)",
+        "models/<run_name>_vecnormalize.pkl",
     )
     parser.add_argument(
         "--episodes",
@@ -158,16 +160,31 @@ def main():
 
         vn_path = args.vecnormalize
         if vn_path is None:
-            # Auto-detect sibling pkl: strip _final / _best from model stem.
-            stem = os.path.splitext(os.path.basename(args.model))[0]
-            for suffix in ("_final", "_best"):
-                if stem.endswith(suffix):
-                    candidate = os.path.join(
-                        os.path.dirname(args.model), f"{stem[:-len(suffix)]}_vecnormalize.pkl"
+            model_dir = os.path.dirname(os.path.abspath(args.model))
+            stem_full = os.path.splitext(os.path.abspath(args.model))[0]
+
+            # 1. Direct sibling — works for any checkpoint/final/best_model
+            candidate = f"{stem_full}_vecnormalize.pkl"
+            if os.path.exists(candidate):
+                vn_path = candidate
+
+            # 2. Fall back to the most recently modified pkl in the same dir
+            if vn_path is None:
+                pkls = sorted(
+                    [
+                        os.path.join(model_dir, f)
+                        for f in os.listdir(model_dir)
+                        if f.endswith("_vecnormalize.pkl")
+                    ],
+                    key=os.path.getmtime,
+                    reverse=True,
+                )
+                if pkls:
+                    vn_path = pkls[0]
+                    print(
+                        f"  (no exact match; using most recent pkl: {os.path.basename(vn_path)})"
                     )
-                    if os.path.exists(candidate):
-                        vn_path = candidate
-                        break
+
         if vn_path is not None:
             import pickle  # noqa: WPS433
 

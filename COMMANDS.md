@@ -92,26 +92,47 @@ python train_ppo.py --timesteps 3000000 --seed 42 --run-name ppo_long
 
 All `train_ppo.py` flags:
 
-| flag            | default     | description                                 |
-| --------------- | ----------- | ------------------------------------------- |
-| `--timesteps`   | `1_500_000` | total env steps                             |
-| `--n-envs`      | `8`         | parallel `SubprocVecEnv` workers            |
-| `--start-phase` | `1`         | curriculum starting phase (1, 2, or 3)      |
-| `--eval-phase`  | `3`         | phase used by `EvalCallback`                |
-| `--seed`        | `0`         | base RNG seed                               |
-| `--run-name`    | `ppo`       | prefix for logs/ and models/ artifacts      |
-| `--threshold`   | `0.70`      | curriculum promotion success-rate threshold |
-| `--n-steps`     | `2048`      | PPO rollout length                          |
-| `--batch-size`  | `256`       | PPO minibatch size                          |
-| `--lr`          | `3e-4`      | Adam learning rate                          |
+| flag             | default     | description                                                        |
+| ---------------- | ----------- | ------------------------------------------------------------------ |
+| `--timesteps`    | `1_500_000` | total env steps (additional steps when resuming)                   |
+| `--n-envs`       | `8`         | parallel `SubprocVecEnv` workers                                   |
+| `--start-phase`  | `1`         | curriculum starting phase (0, 1, 2, or 3)                         |
+| `--eval-phase`   | `3`         | phase used by `EvalCallback`                                       |
+| `--seed`         | `0`         | base RNG seed                                                      |
+| `--run-name`     | `ppo`       | prefix for logs/ and models/ artifacts                             |
+| `--threshold`    | `0.70`      | curriculum promotion success-rate threshold                        |
+| `--n-steps`      | `2048`      | PPO rollout length                                                 |
+| `--batch-size`   | `256`       | PPO minibatch size                                                 |
+| `--lr`           | `3e-4`      | Adam learning rate                                                 |
+| `--resume-from`  | `None`      | path to a checkpoint `.zip` to resume from                        |
 
 Artifacts produced per run (with `--run-name NAME`):
 
 - `models/NAME_final.zip` — final policy
+- `models/NAME_vecnormalize.pkl` — final VecNormalize stats (paired with final model)
 - `models/best_model.zip` — best policy from eval rollouts (overwritten across runs; rename if you want to keep)
-- `models/NAME_<step>_steps.zip` — periodic checkpoints
+- `models/NAME_p{PHASE}_{STEP}_steps.zip` — periodic checkpoints (phase encoded in name)
+- `models/NAME_p{PHASE}_{STEP}_steps_vecnormalize.pkl` — paired VecNormalize stats for each checkpoint
 - `logs/NAME_<n>/` — TensorBoard event files
 - `logs/NAME_eval/` — eval callback logs
+
+### Resuming from a checkpoint
+
+Checkpoint filenames encode the curriculum phase at save time, e.g. `ppo_full_p1_150000_steps.zip`.
+
+```bash
+# Resume from a periodic checkpoint (--timesteps = additional steps to train)
+python train_ppo.py --resume-from models/ppo_full_p0_50000_steps.zip --run-name ppo_full_cont
+
+# Resume from a previous run's final model
+python train_ppo.py --resume-from models/ppo_full_final.zip --timesteps 500000 --run-name ppo_full_v2
+
+# Resume and override the starting curriculum phase
+python train_ppo.py --resume-from models/ppo_full_p1_150000_steps.zip --start-phase 1 --run-name ppo_full_v2
+```
+
+VecNormalize statistics are loaded automatically from the paired `_vecnormalize.pkl` file
+(e.g. `ppo_full_p0_50000_steps_vecnormalize.pkl`). If the file is missing, normalization starts fresh.
 
 ---
 

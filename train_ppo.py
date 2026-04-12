@@ -12,6 +12,7 @@ as soon as the agent hits a configurable threshold.
 
 import argparse
 import os
+import re
 import sys
 from collections import deque
 
@@ -24,7 +25,6 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     BaseCallback,
     CallbackList,
-    CheckpointCallback,
     EvalCallback,
 )
 from stable_baselines3.common.vec_env import (
@@ -79,6 +79,7 @@ class CurriculumManagerCallback(BaseCallback):
         self._episodes_since_promotion = 0
         self._success_buf: deque = deque(maxlen=window)
         self._dist_buf: deque = deque(maxlen=window)
+        self._wall_hit_buf: deque = deque(maxlen=window)
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
@@ -91,6 +92,8 @@ class CurriculumManagerCallback(BaseCallback):
             dist = info.get("landing_dist")
             if dist is not None:
                 self._dist_buf.append(dist)
+            if "hit_wall" in info:
+                self._wall_hit_buf.append(float(info["hit_wall"]))
 
         if (
             len(self._success_buf) >= self.window
@@ -111,6 +114,7 @@ class CurriculumManagerCallback(BaseCallback):
                 self._episodes_since_promotion = 0
                 self._success_buf.clear()
                 self._dist_buf.clear()
+                self._wall_hit_buf.clear()
                 self.logger.record("curriculum/phase", float(new_phase))
 
         return True
@@ -130,17 +134,77 @@ class CurriculumManagerCallback(BaseCallback):
             self.logger.record("curriculum/pct_within_1m", float((dists < 1.0).mean() * 100))
             self.logger.record("curriculum/pct_within_2m", float((dists < 2.0).mean() * 100))
             self.logger.record("curriculum/pct_within_6m", float((dists < 6.0).mean() * 100))
+            wall_str = ""
+            if self._wall_hit_buf:
+                wall_str = f"  wall_hit={(np.mean(self._wall_hit_buf)*100):.1f}%"
+                self.logger.record(
+                    "curriculum/wall_hit_rate",
+                    float(np.mean(self._wall_hit_buf) * 100),
+                )
             if self.verbose >= 1:
                 print(
                     f"  [dist] mean={mean_dist:.2f}m  "
-                    f"<1m={( dists < 1.0).mean()*100:.1f}%  "
+                    f"<1m={(dists < 1.0).mean()*100:.1f}%  "
                     f"<2m={(dists < 2.0).mean()*100:.1f}%  "
-                    f"<6m={(dists < 6.0).mean()*100:.1f}%  "
-                    f"| phase={self.current_phase}"
+                    f"<6m={(dists < 6.0).mean()*100:.1f}%"
+                    f"{wall_str}  | phase={self.current_phase}"
                 )
 
 
-def build_vec_env(n_envs: int, start_phase: int, base_seed: int):
+class SaveBestModelCallback(BaseCallback):
+    """Saves {name_prefix}_best.zip + {name_prefix}_vecnormalize.pkl on every new best.
+
+    Pass as callback_on_new_best to EvalCallback (with best_model_save_path=None).
+    enjoy.py auto-detects the vecnorm by stripping '_best' from the model stem.
+    """
+
+    def __init__(self, save_path: str, name_prefix: str, verbose: int = 1):
+        super().__init__(verbose)
+        self.save_path = save_path
+        self.name_prefix = name_prefix
+
+    def _on_step(self) -> bool:
+        model_path = os.path.join(self.save_path, f"{self.name_prefix}_best")
+        vecnorm_path = os.path.join(self.save_path, f"{self.name_prefix}_best_vecnormalize.pkl")
+        self.model.save(model_path)
+        self.training_env.save(vecnorm_path)
+        if self.verbose >= 1:
+            print(f"[Best] {model_path}.zip  (vecnorm → {os.path.basename(vecnorm_path)})")
+        return True
+
+
+class PhaseCheckpointCallback(BaseCallback):
+    """
+    Saves periodic checkpoints with the current curriculum phase in the filename.
+    Also saves paired VecNormalize stats so resume is always reliable.
+
+    Produces:
+        models/{name_prefix}_p{phase}_{timesteps}_steps.zip
+        models/{name_prefix}_p{phase}_{timesteps}_steps_vecnormalize.pkl
+    """
+
+    def __init__(self, save_freq: int, save_path: str, name_prefix: str,
+                 curriculum_cb: "CurriculumManagerCallback", verbose: int = 1):
+        super().__init__(verbose)
+        self.save_freq = save_freq
+        self.save_path = save_path
+        self.name_prefix = name_prefix
+        self.curriculum_cb = curriculum_cb
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            phase = self.curriculum_cb.current_phase
+            stem = f"{self.name_prefix}_p{phase}_{self.num_timesteps}_steps"
+            model_path = os.path.join(self.save_path, stem)
+            vecnorm_path = os.path.join(self.save_path, f"{stem}_vecnormalize.pkl")
+            self.model.save(model_path)
+            self.training_env.save(vecnorm_path)
+            if self.verbose >= 1:
+                print(f"[Checkpoint] Saved {model_path}.zip  (phase {phase})")
+        return True
+
+
+def build_vec_env(n_envs: int, start_phase: int, base_seed: int, vecnorm_path: str = None):
     if n_envs == 1:
         vec = DummyVecEnv([make_env(0, start_phase, base_seed)])
     else:
@@ -149,8 +213,14 @@ def build_vec_env(n_envs: int, start_phase: int, base_seed: int):
             start_method="spawn",
         )
     vec = VecMonitor(vec)
-    vec = VecNormalize(vec, norm_obs=True, norm_reward=True, clip_obs=10.0)
-    return vec
+    if vecnorm_path and os.path.exists(vecnorm_path):
+        env = VecNormalize.load(vecnorm_path, vec)
+        env.training = True
+        env.norm_reward = True
+        print(f"Loaded VecNormalize stats from {vecnorm_path}")
+    else:
+        env = VecNormalize(vec, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    return env
 
 
 def build_eval_env(start_phase: int, seed: int):
@@ -183,6 +253,9 @@ def parse_args():
     p.add_argument("--n-steps", type=int, default=2048)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--resume-from", type=str, default=None,
+                   help="Path to a checkpoint .zip to resume from "
+                        "(e.g. models/ppo_full_p1_50000_steps.zip)")
     return p.parse_args()
 
 
@@ -192,41 +265,57 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     print(f"Building {args.n_envs} parallel envs (phase {args.start_phase})...")
-    train_env = build_vec_env(args.n_envs, args.start_phase, args.seed)
     eval_env = build_eval_env(args.eval_phase, args.seed + 10_000)
 
-    model = PPO(
-        "MlpPolicy",
-        train_env,
-        device="cpu",
-        learning_rate=args.lr,
-        n_steps=args.n_steps,
-        batch_size=args.batch_size,
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.05,
-        vf_coef=0.5,
-        target_kl=0.05,
-        max_grad_norm=0.5,
-        tensorboard_log=LOG_DIR,
-        seed=args.seed,
-        verbose=1,
-    )
+    if args.resume_from:
+        vecnorm_path = re.sub(r'\.zip$', '_vecnormalize.pkl', args.resume_from)
+        if not os.path.exists(vecnorm_path):
+            print(f"Warning: no VecNormalize stats at {vecnorm_path}; starting fresh normalization")
+            vecnorm_path = None
+        train_env = build_vec_env(args.n_envs, args.start_phase, args.seed,
+                                  vecnorm_path=vecnorm_path)
+        model = PPO.load(args.resume_from, env=train_env, device="cpu")
+        print(f"Resumed from {args.resume_from}")
+    else:
+        train_env = build_vec_env(args.n_envs, args.start_phase, args.seed)
+        model = PPO(
+            "MlpPolicy",
+            train_env,
+            device="cpu",
+            learning_rate=args.lr,
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.05,
+            vf_coef=0.5,
+            target_kl=0.05,
+            max_grad_norm=0.5,
+            tensorboard_log=LOG_DIR,
+            seed=args.seed,
+            verbose=1,
+        )
 
     curriculum_cb = CurriculumManagerCallback(
         start_phase=args.start_phase,
         threshold=args.threshold,
     )
-    checkpoint_cb = CheckpointCallback(
+    checkpoint_cb = PhaseCheckpointCallback(
         save_freq=max(50_000 // args.n_envs, 1),
+        save_path=MODEL_DIR,
+        name_prefix=args.run_name,
+        curriculum_cb=curriculum_cb,
+    )
+    save_best_cb = SaveBestModelCallback(
         save_path=MODEL_DIR,
         name_prefix=args.run_name,
     )
     eval_cb = EvalCallback(
         eval_env,
-        best_model_save_path=MODEL_DIR,
+        best_model_save_path=None,       # we save ourselves via callback_on_new_best
+        callback_on_new_best=save_best_cb,
         log_path=os.path.join(LOG_DIR, f"{args.run_name}_eval"),
         eval_freq=max(25_000 // args.n_envs, 1),
         n_eval_episodes=20,
@@ -247,7 +336,7 @@ def main():
     finally:
         final_path = os.path.join(MODEL_DIR, f"{args.run_name}_final.zip")
         model.save(final_path)
-        vecnorm_path = os.path.join(MODEL_DIR, f"{args.run_name}_vecnormalize.pkl")
+        vecnorm_path = os.path.join(MODEL_DIR, f"{args.run_name}_final_vecnormalize.pkl")
         train_env.save(vecnorm_path)
         print(f"Saved final model to {final_path}")
         print(f"Saved VecNormalize stats to {vecnorm_path}")
