@@ -197,7 +197,7 @@ def main():
                 "observations — expect garbage behaviour."
             )
 
-    env = AerodynamicEnv(curriculum_phase=args.phase)
+    env = AerodynamicEnv(curriculum_phase=args.phase, disable_spin_before_phase=2)
     obs, _ = env.reset(seed=42)
 
     print(__doc__)

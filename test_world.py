@@ -71,6 +71,44 @@ class TestPhase0:
             assert 4.9 <= dist <= 10.1, f"seed={seed}: target dist {dist:.2f} not in [5, 10]"
         env.close()
 
+    def test_spin_disabled_during_training(self):
+        """Spin action should have no effect in Phase 0 when disable_spin_before_phase=2."""
+        env = AerodynamicEnv(curriculum_phase=0, disable_spin_before_phase=2)
+
+        def land_pos(action):
+            env.reset(seed=42)
+            terminated = truncated = False
+            while not (terminated or truncated):
+                _, _, terminated, truncated, _ = env.step(action)
+            return env.data.xpos[env.ball_body_id].copy()
+
+        pos_pos = land_pos(SPIN_POS)
+        pos_neg = land_pos(SPIN_NEG)
+        lateral_diff = abs(pos_pos[1] - pos_neg[1])
+        assert lateral_diff < 0.01, (
+            f"Spin should be disabled but caused {lateral_diff:.4f}m deviation"
+        )
+        env.close()
+
+    def test_spin_works_in_gui_mode(self):
+        """Spin should work in Phase 0 by default (disable_spin_before_phase=0)."""
+        env = AerodynamicEnv(curriculum_phase=0)
+
+        def land_pos(action):
+            env.reset(seed=42)
+            terminated = truncated = False
+            while not (terminated or truncated):
+                _, _, terminated, truncated, _ = env.step(action)
+            return env.data.xpos[env.ball_body_id].copy()
+
+        pos_pos = land_pos(SPIN_POS)
+        pos_neg = land_pos(SPIN_NEG)
+        lateral_diff = abs(pos_pos[1] - pos_neg[1])
+        assert lateral_diff > 0.5, (
+            f"Spin should work by default but only caused {lateral_diff:.4f}m deviation"
+        )
+        env.close()
+
     def test_wall_hidden(self):
         """Wall should be hidden (x > 500) in Phase 0."""
         env = AerodynamicEnv(curriculum_phase=0)
@@ -273,8 +311,9 @@ class TestMagnusEffect:
         """
         Same throw with opposite spin should land at clearly different positions.
         The Magnus force is F = k*(ω×v); ω_z with v_x produces force in ±y.
+        Uses phase 2+ where spin is active (spin is disabled in phases 0-1).
         """
-        env = AerodynamicEnv(curriculum_phase=1)
+        env = AerodynamicEnv(curriculum_phase=2)
 
         def land_pos(action):
             env.reset(seed=42)
@@ -293,8 +332,9 @@ class TestMagnusEffect:
         env.close()
 
     def test_no_spin_symmetric(self):
-        """Zero spin with zero yaw should stay close to y=0 (symmetric throw)."""
-        env = AerodynamicEnv(curriculum_phase=1)
+        """Zero spin with zero yaw should stay close to y=0 (symmetric throw).
+        Uses phase 2+ where spin is active."""
+        env = AerodynamicEnv(curriculum_phase=2)
         env.reset(seed=42)
         terminated = truncated = False
         while not (terminated or truncated):

@@ -27,7 +27,7 @@ pip install -r requirements.txt
 ## 2. Sanity checks
 
 ```bash
-# Regression tests — 22 tests covering all 3 curriculum phases + Magnus
+# Regression tests — 29 tests covering all curriculum phases + Magnus + spin disable
 python -m pytest test_world.py -v
 
 # Quick pass/fail only
@@ -63,10 +63,15 @@ Slider ranges (from `action_space`):
 
 | slider | range     | physical meaning                   |
 | ------ | --------- | ---------------------------------- |
-| pitch  | `[-1, 1]` | launch elevation `[-30°, 30°]`     |
+| pitch  | `[-1, 1]` | launch elevation `[-45°, 45°]`     |
 | yaw    | `[-1, 1]` | azimuth `[-180°, 180°]`            |
 | thrust | `[-1, 1]` | initial speed `[2, 22] m/s`        |
 | spin   | `[-1, 1]` | angular velocity `[-20, 20] rad/s` |
+
+> **Note:** Spin always works in the GUI. During **training only**, spin is
+> disabled in phases 0–1 (`disable_spin_before_phase=2`) to prevent the
+> Gaussian policy from collapsing to ±1 on an irrelevant dimension. Spin
+> activates automatically when the curriculum promotes to phase 2 (walls).
 
 ---
 
@@ -96,8 +101,8 @@ All `train_ppo.py` flags:
 | ---------------- | ----------- | ------------------------------------------------------------------ |
 | `--timesteps`    | `1_500_000` | total env steps (additional steps when resuming)                   |
 | `--n-envs`       | `8`         | parallel `SubprocVecEnv` workers                                   |
-| `--start-phase`  | `1`         | curriculum starting phase (0, 1, 2, or 3)                         |
-| `--eval-phase`   | `3`         | phase used by `EvalCallback`                                       |
+| `--start-phase`  | `0`         | curriculum starting phase (0, 1, 2, or 3)                         |
+| `--eval-phase`   | `0`         | phase used by `EvalCallback`                                       |
 | `--seed`         | `0`         | base RNG seed                                                      |
 | `--run-name`     | `ppo`       | prefix for logs/ and models/ artifacts                             |
 | `--threshold`    | `0.70`      | curriculum promotion success-rate threshold                        |
@@ -115,6 +120,22 @@ Artifacts produced per run (with `--run-name NAME`):
 - `models/NAME_p{PHASE}_{STEP}_steps_vecnormalize.pkl` — paired VecNormalize stats for each checkpoint
 - `logs/NAME_<n>/` — TensorBoard event files
 - `logs/NAME_eval/` — eval callback logs
+
+### Curriculum phases
+
+| phase | target distance | wall    | gravity       | spin (training) |
+| ----- | --------------- | ------- | ------------- | --------------- |
+| 0     | 5–10 m          | hidden  | standard      | **disabled**    |
+| 1     | 8–18 m          | hidden  | standard      | **disabled**    |
+| 2     | 15–25 m         | active  | standard      | active          |
+| 3     | 15–25 m         | active  | tilted ±15°   | active          |
+
+Distances overlap between phases (e.g. 8–10 m is shared by phases 0 and 1)
+so the agent has a warm start after each promotion.
+
+On phase promotion, VecNormalize running statistics are partially decayed
+(count × 0.1) so the new phase's observations dominate quickly while the
+model retains some cross-phase knowledge.
 
 ### Resuming from a checkpoint
 

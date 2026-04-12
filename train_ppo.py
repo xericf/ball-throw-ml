@@ -41,11 +41,16 @@ LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 
 
-def make_env(rank: int, start_phase: int, base_seed: int):
+def make_env(
+    rank: int, start_phase: int, base_seed: int, disable_spin_before_phase: int = 2
+):
     """Factory returning a thunk that builds a single one-shot worker env."""
 
     def _thunk():
-        env = AerodynamicEnv(curriculum_phase=start_phase)
+        env = AerodynamicEnv(
+            curriculum_phase=start_phase,
+            disable_spin_before_phase=disable_spin_before_phase,
+        )
         env.reset(seed=base_seed + rank)
         return OneShotFlightWrapper(env)
 
@@ -117,6 +122,29 @@ class CurriculumManagerCallback(BaseCallback):
                 self._wall_hit_buf.clear()
                 self.logger.record("curriculum/phase", float(new_phase))
 
+                # Partially decay VecNormalize running statistics so the new
+                # phase's observations dominate quickly without discarding
+                # everything (keeps cross-phase generalization viable).
+                vec_norm = self.training_env
+                if hasattr(vec_norm, "obs_rms"):
+                    decay = 0.1  # keep 10% of old weight
+                    vec_norm.obs_rms.count *= decay
+                    vec_norm.ret_rms.count *= decay
+                    if self.verbose:
+                        print(
+                            f"  [VecNormalize] Decayed obs_rms/ret_rms counts "
+                            f"(×{decay}) for phase {new_phase}"
+                        )
+
+                # Anneal entropy bonus: high ent_coef keeps the spin Gaussian
+                # wide and noisy in later phases where the policy should be
+                # committing to a confident throw.
+                old_ent = float(self.model.ent_coef)
+                new_ent = max(old_ent * 0.5, 0.005)
+                self.model.ent_coef = new_ent
+                if self.verbose:
+                    print(f"  [ent_coef] {old_ent:.4f} -> {new_ent:.4f}")
+
         return True
 
     def _on_rollout_end(self) -> None:
@@ -130,10 +158,18 @@ class CurriculumManagerCallback(BaseCallback):
             dists = np.array(self._dist_buf)
             mean_dist = float(dists.mean())
             self.logger.record("curriculum/mean_landing_dist", mean_dist)
-            self.logger.record("curriculum/median_landing_dist", float(np.median(dists)))
-            self.logger.record("curriculum/pct_within_1m", float((dists < 1.0).mean() * 100))
-            self.logger.record("curriculum/pct_within_2m", float((dists < 2.0).mean() * 100))
-            self.logger.record("curriculum/pct_within_6m", float((dists < 6.0).mean() * 100))
+            self.logger.record(
+                "curriculum/median_landing_dist", float(np.median(dists))
+            )
+            self.logger.record(
+                "curriculum/pct_within_1m", float((dists < 1.0).mean() * 100)
+            )
+            self.logger.record(
+                "curriculum/pct_within_2m", float((dists < 2.0).mean() * 100)
+            )
+            self.logger.record(
+                "curriculum/pct_within_6m", float((dists < 6.0).mean() * 100)
+            )
             wall_str = ""
             if self._wall_hit_buf:
                 wall_str = f"  wall_hit={(np.mean(self._wall_hit_buf)*100):.1f}%"
@@ -152,24 +188,32 @@ class CurriculumManagerCallback(BaseCallback):
 
 
 class SaveBestModelCallback(BaseCallback):
-    """Saves {name_prefix}_best.zip + {name_prefix}_vecnormalize.pkl on every new best.
+    """Saves {name_prefix}_p{phase}_best.zip + matching vecnormalize on every new best.
 
-    Pass as callback_on_new_best to EvalCallback (with best_model_save_path=None).
-    enjoy.py auto-detects the vecnorm by stripping '_best' from the model stem.
+    Encodes the curriculum phase so best models from different phases don't
+    overwrite each other. Pass as callback_on_new_best to EvalCallback
+    (with best_model_save_path=None so EvalCallback doesn't also save best_model.zip).
     """
 
-    def __init__(self, save_path: str, name_prefix: str, verbose: int = 1):
+    def __init__(
+        self,
+        save_path: str,
+        name_prefix: str,
+        curriculum_cb: "CurriculumManagerCallback",
+        verbose: int = 1,
+    ):
         super().__init__(verbose)
         self.save_path = save_path
         self.name_prefix = name_prefix
+        self.curriculum_cb = curriculum_cb
 
     def _on_step(self) -> bool:
-        model_path = os.path.join(self.save_path, f"{self.name_prefix}_best")
-        vecnorm_path = os.path.join(self.save_path, f"{self.name_prefix}_best_vecnormalize.pkl")
-        self.model.save(model_path)
-        self.training_env.save(vecnorm_path)
+        phase = self.curriculum_cb.current_phase
+        stem = os.path.join(self.save_path, f"{self.name_prefix}_p{phase}_best")
+        self.model.save(stem)
+        self.training_env.save(f"{stem}_vecnormalize.pkl")
         if self.verbose >= 1:
-            print(f"[Best] {model_path}.zip  (vecnorm → {os.path.basename(vecnorm_path)})")
+            print(f"[Best] {stem}.zip  (phase {phase})")
         return True
 
 
@@ -183,8 +227,14 @@ class PhaseCheckpointCallback(BaseCallback):
         models/{name_prefix}_p{phase}_{timesteps}_steps_vecnormalize.pkl
     """
 
-    def __init__(self, save_freq: int, save_path: str, name_prefix: str,
-                 curriculum_cb: "CurriculumManagerCallback", verbose: int = 1):
+    def __init__(
+        self,
+        save_freq: int,
+        save_path: str,
+        name_prefix: str,
+        curriculum_cb: "CurriculumManagerCallback",
+        verbose: int = 1,
+    ):
         super().__init__(verbose)
         self.save_freq = save_freq
         self.save_path = save_path
@@ -204,7 +254,9 @@ class PhaseCheckpointCallback(BaseCallback):
         return True
 
 
-def build_vec_env(n_envs: int, start_phase: int, base_seed: int, vecnorm_path: str = None):
+def build_vec_env(
+    n_envs: int, start_phase: int, base_seed: int, vecnorm_path: str = None
+):
     if n_envs == 1:
         vec = DummyVecEnv([make_env(0, start_phase, base_seed)])
     else:
@@ -253,9 +305,13 @@ def parse_args():
     p.add_argument("--n-steps", type=int, default=2048)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--resume-from", type=str, default=None,
-                   help="Path to a checkpoint .zip to resume from "
-                        "(e.g. models/ppo_full_p1_50000_steps.zip)")
+    p.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Path to a checkpoint .zip to resume from "
+        "(e.g. models/ppo_full_p1_50000_steps.zip)",
+    )
     return p.parse_args()
 
 
@@ -268,12 +324,15 @@ def main():
     eval_env = build_eval_env(args.eval_phase, args.seed + 10_000)
 
     if args.resume_from:
-        vecnorm_path = re.sub(r'\.zip$', '_vecnormalize.pkl', args.resume_from)
+        vecnorm_path = re.sub(r"\.zip$", "_vecnormalize.pkl", args.resume_from)
         if not os.path.exists(vecnorm_path):
-            print(f"Warning: no VecNormalize stats at {vecnorm_path}; starting fresh normalization")
+            print(
+                f"Warning: no VecNormalize stats at {vecnorm_path}; starting fresh normalization"
+            )
             vecnorm_path = None
-        train_env = build_vec_env(args.n_envs, args.start_phase, args.seed,
-                                  vecnorm_path=vecnorm_path)
+        train_env = build_vec_env(
+            args.n_envs, args.start_phase, args.seed, vecnorm_path=vecnorm_path
+        )
         model = PPO.load(args.resume_from, env=train_env, device="cpu")
         print(f"Resumed from {args.resume_from}")
     else:
@@ -291,8 +350,9 @@ def main():
             clip_range=0.2,
             ent_coef=0.05,
             vf_coef=0.5,
-            target_kl=0.05,
+            target_kl=0.10,
             max_grad_norm=0.5,
+            policy_kwargs={"net_arch": [64, 64]},
             tensorboard_log=LOG_DIR,
             seed=args.seed,
             verbose=1,
@@ -303,7 +363,7 @@ def main():
         threshold=args.threshold,
     )
     checkpoint_cb = PhaseCheckpointCallback(
-        save_freq=max(50_000 // args.n_envs, 1),
+        save_freq=max(300_000 // args.n_envs, 1),
         save_path=MODEL_DIR,
         name_prefix=args.run_name,
         curriculum_cb=curriculum_cb,
@@ -311,10 +371,11 @@ def main():
     save_best_cb = SaveBestModelCallback(
         save_path=MODEL_DIR,
         name_prefix=args.run_name,
+        curriculum_cb=curriculum_cb,
     )
     eval_cb = EvalCallback(
         eval_env,
-        best_model_save_path=None,       # we save ourselves via callback_on_new_best
+        best_model_save_path=None,  # we save ourselves via callback_on_new_best
         callback_on_new_best=save_best_cb,
         log_path=os.path.join(LOG_DIR, f"{args.run_name}_eval"),
         eval_freq=max(25_000 // args.n_envs, 1),
@@ -336,7 +397,9 @@ def main():
     finally:
         final_path = os.path.join(MODEL_DIR, f"{args.run_name}_final.zip")
         model.save(final_path)
-        vecnorm_path = os.path.join(MODEL_DIR, f"{args.run_name}_final_vecnormalize.pkl")
+        vecnorm_path = os.path.join(
+            MODEL_DIR, f"{args.run_name}_final_vecnormalize.pkl"
+        )
         train_env.save(vecnorm_path)
         print(f"Saved final model to {final_path}")
         print(f"Saved VecNormalize stats to {vecnorm_path}")
