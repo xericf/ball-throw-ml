@@ -1,0 +1,22 @@
+# Generated outputs
+logs/
+models/
+
+# Virtual environments
+proj_env/
+envs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# MuJoCo
+MUJOCO_LOG.TXT
+
+# macOS
+.DS_Store
+
+# IDE
+pyrightconfig.json
