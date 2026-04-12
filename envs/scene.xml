@@ -1,0 +1,51 @@
+<mujoco model="aerodynamic_env">
+  <option gravity="0 0 -9.81" timestep="0.005" integrator="Euler"/>
+
+  <asset>
+    <material name="floor_mat"  rgba="0.75 0.75 0.75 1"/>
+    <material name="agent_mat"  rgba="0.2  0.4  0.8  1"/>
+    <material name="ball_mat"   rgba="0.9  0.3  0.3  1"/>
+    <material name="target_mat" rgba="0.2  0.9  0.2  0.6"/>
+    <material name="wall_mat"   rgba="0.5  0.5  0.5  1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Static floor plane -->
+    <geom name="floor" type="plane" size="50 50 0.1" material="floor_mat" condim="3"/>
+
+    <!-- Agent: static 1x1x1 cube sitting on floor at origin (throw point) -->
+    <body name="agent" pos="0 0 0.5">
+      <geom name="agent_geom" type="box" size="0.5 0.5 0.5" material="agent_mat"/>
+    </body>
+
+    <!-- Projectile: sphere with freejoint, starts just above agent -->
+    <body name="ball" pos="0 0 1.1">
+      <freejoint name="ball_free"/>
+      <geom name="ball_geom" type="sphere" size="0.1" mass="0.145"
+            material="ball_mat" condim="3"/>
+    </body>
+
+    <!-- Target disc: mocap body, repositioned via data.mocap_pos each reset -->
+    <body name="target" mocap="true" pos="10 0 0.01">
+      <geom name="target_geom" type="cylinder" size="1.0 0.01" material="target_mat"/>
+    </body>
+
+    <!-- Wall obstacle: mocap body, position and width set each reset -->
+    <body name="wall" mocap="true" pos="5 0 5.0">
+      <geom name="wall_geom" type="box" size="0.1 1.0 5.0" material="wall_mat"/>
+    </body>
+
+  </worldbody>
+
+  <actuator>
+    <!-- These actuators exist only to expose GUI sliders for the throw parameters.
+         gear="0 0 0 0 0 0" and forcerange="0 0" guarantee zero force is ever applied
+         to the ball, so they have no physics effect whatsoever. data.ctrl[0..3] is
+         read by enjoy.py to get the slider values. -->
+    <general name="pitch"  joint="ball_free" gear="0 0 0 0 0 0" forcerange="0 0" ctrlrange="-1 1"/>
+    <general name="yaw"    joint="ball_free" gear="0 0 0 0 0 0" forcerange="0 0" ctrlrange="-1 1"/>
+    <general name="thrust" joint="ball_free" gear="0 0 0 0 0 0" forcerange="0 0" ctrlrange="-1 1"/>
+    <general name="spin"   joint="ball_free" gear="0 0 0 0 0 0" forcerange="0 0" ctrlrange="-1 1"/>
+  </actuator>
+
+</mujoco>

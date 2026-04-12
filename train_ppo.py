@@ -18,7 +18,7 @@ from collections import deque
 
 import torch
 
-torch.set_num_threads(1)
+torch.set_num_threads(2)
 
 import numpy as np
 from stable_baselines3 import PPO
@@ -70,8 +70,8 @@ class CurriculumManagerCallback(BaseCallback):
         self,
         start_phase: int = 0,
         max_phase: int = 3,
-        threshold: float = 0.70,
-        window: int = 100,
+        threshold: float = 0.75,
+        window: int = 200,
         min_new_episodes: int = 50,
         verbose: int = 1,
     ):
@@ -296,7 +296,7 @@ def build_eval_env(start_phase: int, seed: int):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--timesteps", type=int, default=1_500_000)
-    p.add_argument("--n-envs", type=int, default=8)
+    p.add_argument("--n-envs", type=int, default=12)
     p.add_argument("--start-phase", type=int, default=0, choices=[0, 1, 2, 3])
     p.add_argument("--eval-phase", type=int, default=0, choices=[0, 1, 2, 3])
     p.add_argument("--seed", type=int, default=0)

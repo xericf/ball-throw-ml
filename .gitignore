@@ -5,7 +5,6 @@ models/*.zip
 
 # Virtual environments
 proj_env/
-envs/
 
 # Python
 __pycache__/
