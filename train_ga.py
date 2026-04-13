@@ -102,7 +102,7 @@ def _evaluate_single(args: tuple) -> tuple:
     set_params(net, genome)
     net.eval()
 
-    env = OneShotFlightWrapper(AerodynamicEnv(curriculum_phase=phase))
+    env = OneShotFlightWrapper(AerodynamicEnv(curriculum_phase=phase, disable_spin_before_phase=2))
     total_reward = 0.0
     success_count = 0
     landing_dists = []
