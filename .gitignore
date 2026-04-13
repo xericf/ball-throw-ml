@@ -1,7 +1,7 @@
 # Generated outputs
 logs/
-models/*.pkl
-models/*.zip
+models/
+wandb/
 
 # Virtual environments
 proj_env/
