@@ -4,7 +4,7 @@ import gymnasium as gym
 import mujoco  # type: ignore[import-untyped]
 
 MAGNUS_K = 0.012  # Magnus force coefficient; F = k * cross(omega, v)
-MAX_EPISODE_STEPS = 600  # 3 s at 0.005 s/step
+MAX_EPISODE_STEPS = 1000  # 5 s at 0.005 s/step
 YAW_OFFSET_MAX = np.pi / 2  # ±90° relative to target bearing
 
 
@@ -157,7 +157,7 @@ class AerodynamicEnv(gym.Env):
         wall_width = 0.0
         place_wall = False
         if self.curriculum_phase == 2:
-            wall_frac = float(rng.uniform(0.55, 0.65))
+            wall_frac = float(rng.uniform(0.45, 0.55))
             wall_width = float(rng.uniform(1.5, 2))
             place_wall = True
         elif self.curriculum_phase >= 3:

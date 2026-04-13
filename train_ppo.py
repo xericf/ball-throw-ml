@@ -66,7 +66,16 @@ class CurriculumManagerCallback(BaseCallback):
     and silently drops custom keys like "success" and "landing_dist".
     """
 
-    FIRST_WALL_PHASE = 2  # easy-wall phase introduced by the egocentric refactor
+    # Entropy coefficient to apply when *entering* each phase.
+    # Set explicitly per-phase so the value at each stage is obvious and easy to tune.
+    ENT_COEF_BY_PHASE: dict[int, float] = {
+        0: 0.05,
+        1: 0.05,
+        2: 0.05,   # wall introduced; spin newly meaningful
+        3: 0.025,
+        4: 0.025,  # gravity tilt introduced; re-explore gravity compensation
+    }
+    ENT_COEF_DEFAULT = 0.005  # fallback for any phase beyond the table
 
     def __init__(
         self,
@@ -75,6 +84,8 @@ class CurriculumManagerCallback(BaseCallback):
         threshold: float = 0.75,
         window: int = 200,
         min_new_episodes: int = 50,
+        save_path: str | None = None,
+        name_prefix: str | None = None,
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -83,6 +94,8 @@ class CurriculumManagerCallback(BaseCallback):
         self.threshold = threshold
         self.window = window
         self.min_new_episodes = min_new_episodes
+        self.save_path = save_path
+        self.name_prefix = name_prefix
         self._episodes_since_promotion = 0
         self._success_buf: deque = deque(maxlen=window)
         self._dist_buf: deque = deque(maxlen=window)
@@ -109,14 +122,24 @@ class CurriculumManagerCallback(BaseCallback):
         ):
             success_rate = float(np.mean(self._success_buf))
             if success_rate > self.threshold:
+                old_phase = self.current_phase
                 new_phase = self.current_phase + 1
                 self.training_env.env_method("set_curriculum_phase", new_phase)
                 if self.verbose:
                     print(
                         f"\n[Curriculum] success_rate={success_rate:.3f} > "
                         f"{self.threshold:.2f} — promoting phase "
-                        f"{self.current_phase} -> {new_phase}\n"
+                        f"{old_phase} -> {new_phase}\n"
                     )
+                # Save the model that just beat the threshold for this phase
+                if self.save_path and self.name_prefix:
+                    stem = os.path.join(
+                        self.save_path, f"{self.name_prefix}_p{old_phase}_final"
+                    )
+                    self.model.save(stem)
+                    self.training_env.save(f"{stem}_vecnormalize.pkl")
+                    if self.verbose:
+                        print(f"  [Phase Final] Saved {stem}.zip")
                 self.current_phase = new_phase
                 self._episodes_since_promotion = 0
                 self._success_buf.clear()
@@ -138,16 +161,8 @@ class CurriculumManagerCallback(BaseCallback):
                             f"(×{decay}) for phase {new_phase}"
                         )
 
-                # Anneal entropy bonus: high ent_coef keeps the spin Gaussian
-                # wide and noisy in later phases where the policy should be
-                # committing to a confident throw. Exception: when entering
-                # the first wall phase, spin newly unlocks and the policy
-                # needs fresh exploration on that dimension — reset to 0.05.
                 old_ent = float(self.model.ent_coef)
-                if new_phase == self.FIRST_WALL_PHASE:
-                    new_ent = 0.05
-                else:
-                    new_ent = max(old_ent * 0.5, 0.005)
+                new_ent = self.ENT_COEF_BY_PHASE.get(new_phase, self.ENT_COEF_DEFAULT)
                 self.model.ent_coef = new_ent
                 if self.verbose:
                     print(f"  [ent_coef] {old_ent:.4f} -> {new_ent:.4f}")
@@ -368,6 +383,8 @@ def main():
     curriculum_cb = CurriculumManagerCallback(
         start_phase=args.start_phase,
         threshold=args.threshold,
+        save_path=MODEL_DIR,
+        name_prefix=args.run_name,
     )
     checkpoint_cb = PhaseCheckpointCallback(
         save_freq=max(300_000 // args.n_envs, 1),
