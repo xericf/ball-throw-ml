@@ -144,21 +144,125 @@ Saved artifacts for `--run-name NAME`:
 
 The training env is wrapped in `OneShotFlightWrapper`, so PPO makes one decision per episode: choose a throw, simulate the full flight internally, and learn from the terminal reward.
 
-## 6. TensorBoard
+## 6. Training GA
+
+The GA trains a neuroevolution policy: a 7→64→64→4 MLP whose weights are evolved
+directly, with no gradient. Each genome is a flat array of ~4 932 floats. Fitness is
+mean reward over `--n-eval-episodes` rollouts. The same five-phase curriculum as PPO
+is used, with promotion gated on the **elite** success rate (top-K genomes only).
+
+```bash
+# Smoke test — tiny population, fast
+python train_ga.py --pop-size 20 --num-generations 10 --n-eval-episodes 5 --n-workers 4 --run-name smoke_ga
+
+# Default curriculum run
+python train_ga.py --run-name ga_full
+
+# Start from a later phase
+python train_ga.py --start-phase 2 --run-name ga_from_p2
+
+# Resume from a population checkpoint
+python train_ga.py --resume-from models/ga_full_p1_gen200_checkpoint.npy --run-name ga_resume
+
+# Enable W&B logging
+python train_ga.py --run-name ga_full --wandb --wandb-project ball-throw-ml
+```
+
+Key CLI flags:
+
+| flag | default | description |
+| ---- | ------- | ----------- |
+| `--pop-size` | `100` | number of genomes per generation |
+| `--num-generations` | `500` | total generations |
+| `--n-eval-episodes` | `30` | rollouts per genome per generation |
+| `--num-parents-mating` | `20` | elites kept unchanged each generation |
+| `--mutation-percent-genes` | `10.0` | % of weights perturbed per offspring |
+| `--mutation-std` | `0.1` | Gaussian noise std for mutation |
+| `--start-phase` | `0` | curriculum phase to begin from |
+| `--n-workers` | `8` | parallel worker processes |
+| `--run-name` | `ga` | prefix for logs and saved models |
+| `--seed` | `0` | RNG seed |
+| `--threshold` | `0.75` | elite success-rate threshold for phase promotion |
+| `--checkpoint-freq` | `50` | save population snapshot every N generations |
+| `--resume-from` | `None` | population checkpoint `.npy` to resume from |
+| `--crossover` | off | enable uniform crossover (off by default — hurts neuroevolution) |
+| `--wandb` | off | enable Weights & Biases logging |
+| `--wandb-project` | `ball-throw-ml` | W&B project name |
+| `--wandb-entity` | `None` | W&B entity / team |
+
+Saved artifacts for `--run-name NAME`:
+
+- `models/NAME_final.pt` — PyTorch state dict of the best genome overall
+- `models/NAME_final_genome.npy` — raw genome array (for resuming or analysis)
+- `models/NAME_p{PHASE}_best.pt` — best genome seen in each phase
+- `models/NAME_p{PHASE}_best_genome.npy`
+- `models/NAME_p{PHASE}_gen{N}_checkpoint.npy` — full population snapshot (for resuming)
+- `logs/NAME/` — TensorBoard event files
+
+To load a saved GA policy in Python:
+
+```python
+import torch
+from train_ga import PolicyNet
+
+net = PolicyNet()
+net.load_state_dict(torch.load("models/ga_full_final.pt", weights_only=True))
+net.eval()
+# obs is a (7,) float32 numpy array
+action = net(torch.from_numpy(obs).unsqueeze(0)).squeeze(0).detach().numpy()
+```
+
+### GA design notes
+
+**No crossover by default.** Uniform crossover between neural net parents produces
+incoherent weights (competing conventions problem) — offspring consistently score ~0%
+even when both parents are excellent. Pure clone-and-mutate is used instead.
+Pass `--crossover` to re-enable for ablation.
+
+**Elite-only curriculum.** The phase-promotion buffer tracks only the top-K elites'
+success rates, not the full population mean. Offspring start with random-ish weights
+relative to each other, dragging the population mean far below the elites; using the
+full mean as the promotion signal would permanently stall the curriculum.
+
+## 7. TensorBoard
 
 ```bash
 tensorboard --logdir logs/
 ```
 
-Useful curves:
+### PPO curves
 
-- `rollout/ep_rew_mean`
-- `curriculum/success_rate`
-- `curriculum/phase`
-- `curriculum/mean_landing_dist`
-- `eval/mean_reward` on phase 4 by default
+| tag | description |
+| --- | ----------- |
+| `rollout/ep_rew_mean` | mean episode reward across workers |
+| `curriculum/phase` | current curriculum phase |
+| `curriculum/success_rate` | rolling success rate (all envs) |
+| `curriculum/mean_landing_dist` | mean landing distance in meters |
+| `eval/mean_reward` | EvalCallback reward on phase 4 |
 
-## 7. PPO Evaluation In The Viewer
+### GA curves
+
+| tag | description |
+| --- | ----------- |
+| `ga/mean_reward` | mean reward across all genomes this generation |
+| `ga/best_reward` | reward of the single best genome this generation |
+| `ga/mean_success_rate` | mean success rate across the full population |
+| `ga/elite_success_rate` | mean success rate of the top-K elites only |
+| `ga/best_success_rate` | success rate of the single best genome |
+| `ga/mean_landing_dist` | mean landing distance across all genomes |
+| `ga/reward_std` | std of rewards across the population (diversity signal) |
+| `curriculum/phase` | current curriculum phase |
+| `curriculum/elite_success_rate` | same as `ga/elite_success_rate` (curriculum context) |
+| `curriculum/rolling_success` | trailing mean of elite success rates in the promotion buffer |
+| `perf/eval_time_s` | wall-clock seconds spent on fitness evaluation this generation |
+
+`ga/elite_success_rate` and `curriculum/rolling_success` are the most useful pair:
+the former is the raw per-generation elite reading, the latter is the smoothed signal
+the curriculum actually uses to decide phase promotion. A healthy run shows
+`elite_success_rate` rising first, with `rolling_success` trailing behind and
+eventually crossing `threshold` (default 0.75) to trigger promotion.
+
+## 8. PPO Evaluation In The Viewer
 
 ```bash
 # Final model
@@ -173,7 +277,3 @@ mjpython enjoy.py \
   --model models/ppo_full_p4_best.zip \
   --vecnormalize models/ppo_full_p4_best_vecnormalize.pkl
 ```
-
-## 8. GA Status
-
-`train_ga.py` is currently a placeholder. The implemented training pipeline in this repo is the PPO path in `train_ppo.py`.
