@@ -39,6 +39,7 @@ from envs.aerodynamic_env import AerodynamicEnv, OneShotFlightWrapper
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+MAX_CURRICULUM_PHASE = 4
 
 
 def make_env(
@@ -80,7 +81,7 @@ class CurriculumManagerCallback(BaseCallback):
     def __init__(
         self,
         start_phase: int = 0,
-        max_phase: int = 4,
+        max_phase: int = MAX_CURRICULUM_PHASE,
         threshold: float = 0.75,
         window: int = 200,
         min_new_episodes: int = 50,
@@ -319,8 +320,19 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--timesteps", type=int, default=1_500_000)
     p.add_argument("--n-envs", type=int, default=12)
-    p.add_argument("--start-phase", type=int, default=0, choices=[0, 1, 2, 3, 4])
-    p.add_argument("--eval-phase", type=int, default=0, choices=[0, 1, 2, 3, 4])
+    p.add_argument(
+        "--start-phase",
+        type=int,
+        default=0,
+        choices=list(range(MAX_CURRICULUM_PHASE + 1)),
+    )
+    p.add_argument(
+        "--eval-phase",
+        type=int,
+        default=MAX_CURRICULUM_PHASE,
+        choices=list(range(MAX_CURRICULUM_PHASE + 1)),
+        help="Curriculum phase used by EvalCallback. Defaults to the hardest phase.",
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--run-name", type=str, default="ppo")
     p.add_argument("--threshold", type=float, default=0.75)

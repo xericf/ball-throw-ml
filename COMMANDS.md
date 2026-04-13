@@ -110,7 +110,7 @@ Key CLI flags:
 | `--timesteps` | `1_500_000` | total env steps for this run |
 | `--n-envs` | `12` | number of parallel workers |
 | `--start-phase` | `0` | curriculum phase to start training from |
-| `--eval-phase` | `0` | phase used by `EvalCallback` |
+| `--eval-phase` | `4` | phase used by `EvalCallback`; defaults to the hardest phase |
 | `--seed` | `0` | base RNG seed |
 | `--run-name` | `ppo` | prefix for logs and saved models |
 | `--threshold` | `0.75` | success-rate threshold for phase promotion |
@@ -156,7 +156,7 @@ Useful curves:
 - `curriculum/success_rate`
 - `curriculum/phase`
 - `curriculum/mean_landing_dist`
-- `eval/mean_reward`
+- `eval/mean_reward` on phase 4 by default
 
 ## 7. PPO Evaluation In The Viewer
 
