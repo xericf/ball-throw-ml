@@ -2,6 +2,7 @@
 logs/
 models/*.pkl
 models/*.zip
+wandb/
 
 # Virtual environments
 proj_env/

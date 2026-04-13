@@ -37,6 +37,12 @@ from stable_baselines3.common.vec_env import (
 sys.path.insert(0, os.path.dirname(__file__))
 from envs.aerodynamic_env import AerodynamicEnv, OneShotFlightWrapper
 
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
+
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 MAX_CURRICULUM_PHASE = 4
@@ -339,6 +345,8 @@ def parse_args():
     p.add_argument("--n-steps", type=int, default=2048)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    p.add_argument("--wandb-project", type=str, default="ball-throw-ml")
     p.add_argument(
         "--resume-from",
         type=str,
@@ -353,6 +361,18 @@ def main():
     args = parse_args()
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
+
+    wandb_run = None
+    if args.wandb:
+        if not _WANDB_AVAILABLE:
+            print("wandb not installed — skipping W&B logging. Run: pip install wandb")
+        else:
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                name=args.run_name,
+                config=vars(args),
+                sync_tensorboard=True,
+            )
 
     print(f"Building {args.n_envs} parallel envs (phase {args.start_phase})...")
     eval_env = build_eval_env(args.eval_phase, args.seed + 10_000)
@@ -441,6 +461,8 @@ def main():
         print(f"Saved VecNormalize stats to {vecnorm_path}")
         train_env.close()
         eval_env.close()
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 if __name__ == "__main__":
