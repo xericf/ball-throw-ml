@@ -2,20 +2,22 @@
 enjoy.py — Interactive MuJoCo viewer for AerodynamicEnv.
 
 Use the "Control" sliders on the right-hand GUI panel to set throw parameters:
-  pitch   – launch elevation   [-1, 1]  →  [-30°, 30°]
-  yaw     – horizontal azimuth [-1, 1]  →  [-180°, 180°]
-  thrust  – initial speed      [-1, 1]  →  [2, 22] m/s
-  spin    – angular velocity   [-1, 1]  →  [-20, 20] rad/s
+  pitch   – launch elevation     [-1, 1]  →  [-45°, 45°]
+  yaw     – offset from target   [-1, 1]  →  [-90°, 90°]   (0 = straight at target)
+  thrust  – initial speed        [-1, 1]  →  [2, 22] m/s
+  spin    – angular velocity     [-1, 1]  →  [-20, 20] rad/s
 
 Keys (viewer window must be focused):
-  ENTER      – throw the ball with the current slider values
-  R / F5     – reset / new random episode (slider values preserved)
-  1 / 2 / 3  – switch curriculum phase
+  ENTER          – throw the ball with the current slider values
+  R / F5         – reset / new random episode (slider values preserved)
+  0 / 1 / 2 / 3  – switch curriculum phase (0=no wall close, 1=no wall, 2=easy wall, 3=hard wall)
+  4              – phase 4 (hard wall + tilted gravity)
 
 Usage:
     mjpython enjoy.py                  # phase 1, no wall
-    mjpython enjoy.py --phase 2        # phase 2, wall present
-    mjpython enjoy.py --phase 3        # phase 3, tilted gravity
+    mjpython enjoy.py --phase 2        # phase 2, easy wall
+    mjpython enjoy.py --phase 3        # phase 3, full wall range
+    mjpython enjoy.py --phase 4        # phase 4, wall + tilted gravity
     mjpython enjoy.py --demo           # auto-demo (no interaction needed)
     mjpython enjoy.py --phase 3 --model models/ppo_full_best.zip  # watch trained policy
 """
@@ -42,9 +44,11 @@ _KEY_MAP = {
     257: " ",  # ENTER → throw
     294: "r",  # F5    → reset (new scene)
     82: "r",  # R     → reset (new scene)
+    48: "0",  # 0
     49: "1",  # 1
     50: "2",  # 2
     51: "3",  # 3
+    52: "4",  # 4
 }
 
 
@@ -123,7 +127,7 @@ def run_demo(env, viewer):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", type=int, default=1, choices=[0, 1, 2, 3])
+    parser.add_argument("--phase", type=int, default=1, choices=[0, 1, 2, 3, 4])
     parser.add_argument(
         "--demo",
         action="store_true",
@@ -356,6 +360,11 @@ def main():
                     terminated = truncated = False
                     print("Reset (new scene).")
 
+                elif key == "0":
+                    reset_scene(phase=0)
+                    mujoco.mj_forward(env.model, env.data)
+                    viewer.sync()
+                    print("Phase 0 (close, no wall).")
                 elif key == "1":
                     reset_scene(phase=1)
                     mujoco.mj_forward(env.model, env.data)
@@ -365,12 +374,17 @@ def main():
                     reset_scene(phase=2)
                     mujoco.mj_forward(env.model, env.data)
                     viewer.sync()
-                    print("Phase 2 (wall added).")
+                    print("Phase 2 (easy wall).")
                 elif key == "3":
                     reset_scene(phase=3)
                     mujoco.mj_forward(env.model, env.data)
                     viewer.sync()
-                    print("Phase 3 (gravity tilt).")
+                    print("Phase 3 (full wall range).")
+                elif key == "4":
+                    reset_scene(phase=4)
+                    mujoco.mj_forward(env.model, env.data)
+                    viewer.sync()
+                    print("Phase 4 (wall + gravity tilt).")
 
 
 if __name__ == "__main__":

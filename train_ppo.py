@@ -66,10 +66,12 @@ class CurriculumManagerCallback(BaseCallback):
     and silently drops custom keys like "success" and "landing_dist".
     """
 
+    FIRST_WALL_PHASE = 2  # easy-wall phase introduced by the egocentric refactor
+
     def __init__(
         self,
         start_phase: int = 0,
-        max_phase: int = 3,
+        max_phase: int = 4,
         threshold: float = 0.75,
         window: int = 200,
         min_new_episodes: int = 50,
@@ -138,9 +140,14 @@ class CurriculumManagerCallback(BaseCallback):
 
                 # Anneal entropy bonus: high ent_coef keeps the spin Gaussian
                 # wide and noisy in later phases where the policy should be
-                # committing to a confident throw.
+                # committing to a confident throw. Exception: when entering
+                # the first wall phase, spin newly unlocks and the policy
+                # needs fresh exploration on that dimension — reset to 0.05.
                 old_ent = float(self.model.ent_coef)
-                new_ent = max(old_ent * 0.5, 0.005)
+                if new_phase == self.FIRST_WALL_PHASE:
+                    new_ent = 0.05
+                else:
+                    new_ent = max(old_ent * 0.5, 0.005)
                 self.model.ent_coef = new_ent
                 if self.verbose:
                     print(f"  [ent_coef] {old_ent:.4f} -> {new_ent:.4f}")
@@ -297,11 +304,11 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--timesteps", type=int, default=1_500_000)
     p.add_argument("--n-envs", type=int, default=12)
-    p.add_argument("--start-phase", type=int, default=0, choices=[0, 1, 2, 3])
-    p.add_argument("--eval-phase", type=int, default=0, choices=[0, 1, 2, 3])
+    p.add_argument("--start-phase", type=int, default=0, choices=[0, 1, 2, 3, 4])
+    p.add_argument("--eval-phase", type=int, default=0, choices=[0, 1, 2, 3, 4])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--run-name", type=str, default="ppo")
-    p.add_argument("--threshold", type=float, default=0.70)
+    p.add_argument("--threshold", type=float, default=0.75)
     p.add_argument("--n-steps", type=int, default=2048)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)

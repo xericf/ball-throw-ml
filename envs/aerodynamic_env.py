@@ -5,27 +5,35 @@ import mujoco  # type: ignore[import-untyped]
 
 MAGNUS_K = 0.012  # Magnus force coefficient; F = k * cross(omega, v)
 MAX_EPISODE_STEPS = 600  # 3 s at 0.005 s/step
+YAW_OFFSET_MAX = np.pi / 2  # ±90° relative to target bearing
 
 
 class AerodynamicEnv(gym.Env):
     """
-    3D aerodynamic targeting environment.
+    3D aerodynamic targeting environment (egocentric, target-facing frame).
 
     The agent (fixed point at the origin) throws a sphere at a randomised
     target disc.  Optionally, a wall blocks the direct line of sight and the
     ground plane is tilted so that gravity has a horizontal component.
 
-    Observation (8-dim):
-        target_dx, target_dy        – target centre relative to agent (x, y)
-        wall_dx,   wall_dy          – wall centre relative to agent (x, y)
-        wall_width                  – full width of the wall (y extent)
-        gravity_x, gravity_y, gravity_z  – current gravity vector components
+    All observations and the yaw action are expressed in a frame whose +x axis
+    points at the target — rotationally-equivalent scenarios collapse to the
+    same observation, and yaw=0 means "throw straight at the target".
+
+    Observation (7-dim):
+        target_distance          – scalar distance from agent to target
+        wall_forward_distance    – wall projected onto the agent→target axis
+        wall_lateral_offset      – wall perpendicular component (signed)
+        wall_width               – full width of the wall
+        gravity_forward          – gravity along agent→target axis
+        gravity_lateral          – gravity perpendicular to that axis
+        gravity_z                – vertical gravity component
 
     Action (4-dim, [-1, 1]):
-        pitch   – launch elevation, mapped to [-45°, 45°]
-        yaw     – horizontal azimuth,  mapped to [-180°, 180°]
-        thrust  – initial speed,       mapped to [2, 22] m/s
-        spin    – angular velocity (ω_z), mapped to [-20, 20] rad/s
+        pitch   – launch elevation,        mapped to [-45°, 45°]
+        yaw     – offset from target bearing, mapped to [-90°, 90°]
+        thrust  – initial speed,           mapped to [2, 22] m/s
+        spin    – angular velocity (ω_z),  mapped to [-20, 20] rad/s
     """
 
     metadata = {"render_modes": ["human", "rgb_array"]}
@@ -88,7 +96,7 @@ class AerodynamicEnv(gym.Env):
 
         # ---- Gymnasium spaces ----
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
         )
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
@@ -100,6 +108,15 @@ class AerodynamicEnv(gym.Env):
         self._spin = 0.0
         self._hit_wall = False
         self._min_dist_seen = float("inf")
+
+        # Cached per-episode quantities (populated in reset). The observation
+        # is constant across the flight, so we compute it once and reuse.
+        self._target_bearing = 0.0
+        self._target_dist = 0.0
+        self._wall_forward = 0.0
+        self._wall_lateral = 0.0
+        self._wall_width = 0.0
+        self._cached_obs = np.zeros(7, dtype=np.float32)
 
         # Viewer (lazy-initialised for human rendering)
         self._viewer = None
@@ -122,22 +139,38 @@ class AerodynamicEnv(gym.Env):
         if self.curriculum_phase == 0:
             target_dist = rng.uniform(5.0, 10.0)
         else:
-            target_dist = rng.uniform(8.0, 18.0)
+            target_dist = rng.uniform(9.0, 20.0)
 
         target_angle = rng.uniform(-np.pi, np.pi)
         target_x = target_dist * np.cos(target_angle)
         target_y = target_dist * np.sin(target_angle)
         self.data.mocap_pos[self.target_mocap_id] = [target_x, target_y, 0.01]
 
-        # ---- Curriculum phase 2+: add wall ----
-        if self.curriculum_phase >= 2:
-            wall_frac = rng.uniform(0.4, 0.6)
+        # Cache the agent→target bearing and distance for the egocentric frame.
+        self._target_bearing = float(target_angle)
+        self._target_dist = float(target_dist)
+
+        # ---- Wall placement ----
+        # Phase 2 (easy wall): narrow, close to target, easy to dodge.
+        # Phase 3+ (was phase 2): full range.
+        wall_frac = 0.0
+        wall_width = 0.0
+        place_wall = False
+        if self.curriculum_phase == 2:
+            wall_frac = float(rng.uniform(0.55, 0.65))
+            wall_width = float(rng.uniform(1.5, 2))
+            place_wall = True
+        elif self.curriculum_phase >= 3:
+            wall_frac = float(rng.uniform(0.4, 0.6))
+            wall_width = float(rng.uniform(1.5, 4))
+            place_wall = True
+
+        if place_wall:
             wall_x = target_x * wall_frac
             wall_y = target_y * wall_frac
-            wall_width = rng.uniform(1.0, 3.0)  # full width (m)
             self.data.mocap_pos[self.wall_mocap_id] = [wall_x, wall_y, 5.0]
             # geom_size stores half-extents: [half_x, half_y, half_z]
-            self.model.geom_size[self.wall_geom_id] = [0.1, wall_width / 2.0, 5.0]
+            self.model.geom_size[self.wall_geom_id] = [0.1, wall_width / 2.0, 7.0]
             # Rotate wall so its wide face is perpendicular to the origin→wall direction
             angle = np.arctan2(wall_y, wall_x)
             self.data.mocap_quat[self.wall_mocap_id] = [
@@ -146,14 +179,23 @@ class AerodynamicEnv(gym.Env):
                 0.0,
                 np.sin(angle / 2),
             ]
+            # Egocentric wall coords (constant per episode)
+            cb = np.cos(self._target_bearing)
+            sb = np.sin(self._target_bearing)
+            self._wall_forward = float(wall_x * cb + wall_y * sb)
+            self._wall_lateral = float(-wall_x * sb + wall_y * cb)
+            self._wall_width = float(wall_width)
         else:
             # Hide wall far away and reset orientation
             self.data.mocap_pos[self.wall_mocap_id] = [1000.0, 0.0, 5.0]
             self.model.geom_size[self.wall_geom_id] = [0.1, 1.0, 5.0]
             self.data.mocap_quat[self.wall_mocap_id] = [1.0, 0.0, 0.0, 0.0]
+            self._wall_forward = 0.0
+            self._wall_lateral = 0.0
+            self._wall_width = 0.0
 
-        # ---- Curriculum phase 3+: tilt gravity ----
-        if self.curriculum_phase >= 3:
+        # ---- Curriculum phase 4+: tilt gravity ----
+        if self.curriculum_phase >= 4:
             tx_deg, ty_deg = rng.uniform(-15.0, 15.0, size=2)
             tx = np.deg2rad(tx_deg)
             ty = np.deg2rad(ty_deg)
@@ -173,8 +215,28 @@ class AerodynamicEnv(gym.Env):
         self._hit_wall = False
         self._min_dist_seen = float("inf")
 
-        obs = self._get_obs()
-        return obs, {}
+        # Build the (constant) egocentric observation once per episode.
+        cb = np.cos(self._target_bearing)
+        sb = np.sin(self._target_bearing)
+        gx, gy, gz = (
+            float(self.model.opt.gravity[0]),
+            float(self.model.opt.gravity[1]),
+            float(self.model.opt.gravity[2]),
+        )
+        self._cached_obs = np.array(
+            [
+                self._target_dist,
+                self._wall_forward,
+                self._wall_lateral,
+                self._wall_width,
+                gx * cb + gy * sb,  # gravity_forward
+                -gx * sb + gy * cb,  # gravity_lateral
+                gz,
+            ],
+            dtype=np.float32,
+        )
+
+        return self._cached_obs.copy(), {}
 
     def step(self, action):
         # Apply throw on the very first step of each episode
@@ -204,21 +266,24 @@ class AerodynamicEnv(gym.Env):
         if dist < self._min_dist_seen:
             self._min_dist_seen = dist
         # Quadratic proximity bonus: ramps from 0 at 6 m to +3 at 0 m
-        prox = max(0.0, (6.0 - dist) / 6.0)
-        # Closest-approach shaping: smooth gradient on spin direction even when
-        # the throw misses the disc. Caps at +2 (smaller than landing terms so
-        # the policy still has to actually land on the disc).
+        prox = max(0.0, (5.0 - dist) / 5.0)
+        # Closest-approach shaping, scaled by how close the ball actually
+        # landed to the target. Throws that miss by more than 4 m get zero
+        # credit, killing the "throw short of the wall" and "spin past the
+        # target" exploits where the trajectory grazed the target but the
+        # ball never landed near it.
         prox_min = max(0.0, (6.0 - self._min_dist_seen) / 6.0)
+        landing_factor = max(0.0, (3.0 - dist) / 3.0)
         # Wall-hit penalty only applies at terminal step so it sums once per episode
         wall_penalty = (
             -5.0 * float(self._hit_wall) if (terminated or truncated) else 0.0
         )
         reward = (
             -dist
-            + 3.0 * (prox**2)  # up to +3 bonus within 6 m of landing
-            + 2.0 * float(dist < 2.0)  # stepping-stone bonus inside 2 m
+            + 2.0 * (prox**2)  # bonus within 5 m of landing
+            + 1.5 * float(dist < 2.0)  # stepping-stone bonus inside 2 m
             + 5.0 * float(dist < 1.0)  # success bonus inside 1 m
-            + 2.0 * (prox_min**2)  # closest-approach shaping (up to +2)
+            + 2.0 * (prox_min**2) * landing_factor  # gated closest-approach
             + wall_penalty  # -5 if ball hit the wall at any point
         )
 
@@ -251,11 +316,17 @@ class AerodynamicEnv(gym.Env):
     # ------------------------------------------------------------------
 
     def _apply_throw(self, action):
-        """Convert normalised action to initial ball velocity."""
+        """Convert normalised action to initial ball velocity.
+
+        Yaw is target-relative: yaw_norm=0 throws straight at the target,
+        yaw_norm=±1 corresponds to ±YAW_OFFSET_MAX (±90°) off the bearing.
+        This removes the wraparound discontinuity that the world-frame yaw
+        had at ±π, and gives the policy a sensible identity init.
+        """
         pitch_norm, yaw_norm, thrust_norm, spin_norm = action
 
         pitch_rad = float(pitch_norm) * (np.pi / 4)  # [-45°, 45°]
-        yaw_rad = float(yaw_norm) * np.pi  # [-180°, 180°]
+        yaw_rad = self._target_bearing + float(yaw_norm) * YAW_OFFSET_MAX
         speed = (float(thrust_norm) + 1.0) / 2.0 * 20.0 + 2.0  # [2, 22] m/s
         spin_radps = float(spin_norm) * 20.0  # [-20, 20] rad/s
 
@@ -295,34 +366,13 @@ class AerodynamicEnv(gym.Env):
         xfrc[2] = MAGNUS_K * (ox * vy - oy * vx)
 
     def _get_obs(self):
-        """Build 8-dim observation vector (relative to fixed agent at origin)."""
-        target_pos = self.data.mocap_pos[self.target_mocap_id]
+        """Return the cached 7-dim egocentric observation.
 
-        if self.curriculum_phase >= 2:
-            wall_pos = self.data.mocap_pos[self.wall_mocap_id]
-            wall_dx = float(wall_pos[0])
-            wall_dy = float(wall_pos[1])
-            wall_width = float(self.model.geom_size[self.wall_geom_id][1]) * 2.0
-        else:
-            wall_dx = 0.0
-            wall_dy = 0.0
-            wall_width = 0.0
-
-        grav = self.model.opt.gravity
-
-        return np.array(
-            [
-                target_pos[0],  # target_dx
-                target_pos[1],  # target_dy
-                wall_dx,  # wall_dx  (0 when no wall)
-                wall_dy,  # wall_dy  (0 when no wall)
-                wall_width,  # wall full width (0 when no wall)
-                float(grav[0]),  # gravity_x
-                float(grav[1]),  # gravity_y
-                float(grav[2]),  # gravity_z
-            ],
-            dtype=np.float32,
-        )
+        The observation is constant across an episode (target/wall/gravity are
+        fixed at reset and the agent is a static point at the origin), so we
+        compute it once in reset and return a copy here.
+        """
+        return self._cached_obs.copy()
 
     def _check_floor_contact(self) -> bool:
         """Return True if the ball geom is in contact with the floor geom."""
