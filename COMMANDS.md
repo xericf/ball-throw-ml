@@ -262,7 +262,58 @@ the curriculum actually uses to decide phase promotion. A healthy run shows
 `elite_success_rate` rising first, with `rolling_success` trailing behind and
 eventually crossing `threshold` (default 0.75) to trigger promotion.
 
-## 8. PPO Evaluation In The Viewer
+## 8. Evaluating Trained Policies
+
+`evaluate.py` runs a saved checkpoint through each curriculum phase and prints a
+comparison table (success rate, landing distance, reward). Use `--output` to save
+JSON for plotting.
+
+```bash
+# Evaluate PPO across all phases (VecNormalize stats auto-detected)
+python evaluate.py --model models/ppo_full_final.zip --algo ppo
+
+# Evaluate GA across all phases
+python evaluate.py --model models/ga_full_final.pt --algo ga
+
+# More episodes, specific phases, save JSON
+python evaluate.py --model models/ppo_full_final.zip --algo ppo \
+    --phases 2 3 4 --n-episodes 500 --output results/ppo_eval.json
+
+python evaluate.py --model models/ga_full_final.pt --algo ga \
+    --phases 2 3 4 --n-episodes 500 --output results/ga_eval.json
+
+# Explicit VecNormalize path (if auto-detection fails)
+python evaluate.py --model models/ppo_full_p4_best.zip --algo ppo \
+    --vecnormalize models/ppo_full_p4_best_vecnormalize.pkl
+```
+
+Key CLI flags:
+
+| flag | default | description |
+| ---- | ------- | ----------- |
+| `--model` | *(required)* | `.zip` for PPO, `.pt` for GA |
+| `--algo` | *(required)* | `ppo` or `ga` |
+| `--vecnormalize` | auto-detected | VecNormalize `.pkl` for PPO |
+| `--phases` | `0 1 2 3 4` | curriculum phases to evaluate |
+| `--n-episodes` | `200` | episodes per phase |
+| `--seed` | `42` | base RNG seed |
+| `--output` | `None` | save results as JSON to this path |
+
+The JSON output has this shape (useful for plotting):
+```json
+{
+  "algo": "ppo",
+  "model": "models/ppo_full_final.zip",
+  "n_episodes": 200,
+  "seed": 42,
+  "phases": {
+    "0": { "success_rate": 0.95, "mean_landing_dist": 0.41, "mean_reward": 4.12, ... },
+    "4": { "success_rate": 0.82, "mean_landing_dist": 0.63, "mean_reward": 3.71, ... }
+  }
+}
+```
+
+## 9. PPO Viewer
 
 ```bash
 # Final model
