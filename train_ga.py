@@ -153,7 +153,7 @@ def evaluate_population(
     n_workers: int,
     pool=None,
 ) -> tuple:
-    """Evaluate all genomes in parallel. Returns (rewards, success_rates, mean_dists).
+    """Evaluate all genomes in parallel. Returns (rewards, success_rates, mean_dists, wall_hit_rates).
 
     If *pool* is provided (a persistent multiprocessing.Pool), it is reused
     directly and not closed here. Otherwise a fresh pool is created and torn
