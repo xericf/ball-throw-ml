@@ -19,7 +19,8 @@ Usage:
     mjpython enjoy.py --phase 3        # phase 3, full wall range
     mjpython enjoy.py --phase 4        # phase 4, wall + tilted gravity
     mjpython enjoy.py --demo           # auto-demo (no interaction needed)
-    mjpython enjoy.py --phase 3 --model models/ppo_full_best.zip  # watch trained policy
+    mjpython enjoy.py --phase 3 --model models/ppo_full_best.zip  # watch PPO policy
+    mjpython enjoy.py --phase 3 --model models/ga_full_final.pt   # watch GA policy
 """
 
 import argparse
@@ -84,14 +85,19 @@ def throw_and_run(env, viewer, action):
     print(f"  Landing dist: {dist:.2f} m  {'SUCCESS' if success else 'miss'}")
 
 
-def run_policy(env, viewer, model, n_episodes=20, vec_normalize=None):
+def run_policy(env, viewer, model, n_episodes=20, vec_normalize=None, algo="ppo"):
     """Query a trained policy for the throw action and visualise each episode."""
+    import torch
     for i in range(n_episodes):
         obs, _ = env.reset()
-        policy_obs = (
-            vec_normalize.normalize_obs(obs) if vec_normalize is not None else obs
-        )
-        action, _ = model.predict(policy_obs, deterministic=True)
+        if algo == "ga":
+            obs_t = torch.from_numpy(np.array(obs, dtype=np.float32)).unsqueeze(0)
+            action = model(obs_t).squeeze(0).detach().numpy()
+        else:
+            policy_obs = (
+                vec_normalize.normalize_obs(obs) if vec_normalize is not None else obs
+            )
+            action, _ = model.predict(policy_obs, deterministic=True)
         label = (
             f"policy throw {i + 1}/{n_episodes} -> "
             f"pitch={action[0]:+.2f} yaw={action[1]:+.2f} "
@@ -137,7 +143,14 @@ def main():
         "--model",
         type=str,
         default=None,
-        help="Path to a trained SB3 PPO .zip; runs policy rollouts instead of interactive mode",
+        help="Path to a trained model (.zip for PPO, .pt for GA); runs policy rollouts instead of interactive mode",
+    )
+    parser.add_argument(
+        "--algo",
+        type=str,
+        default=None,
+        choices=["ppo", "ga"],
+        help="Algorithm type (auto-detected from file extension if not specified)",
     )
     parser.add_argument(
         "--vecnormalize",
@@ -156,14 +169,28 @@ def main():
 
     policy_model = None
     vec_normalize = None
+    algo = args.algo
     if args.model is not None:
-        from stable_baselines3 import PPO  # type: ignore[import-untyped]
+        # Auto-detect algo from file extension if not specified
+        if algo is None:
+            algo = "ga" if args.model.endswith(".pt") else "ppo"
 
-        print(f"Loading policy from {args.model}")
-        policy_model = PPO.load(args.model, device="cpu")
+        print(f"Loading {algo.upper()} policy from {args.model}")
 
-        vn_path = args.vecnormalize
-        if vn_path is None:
+        if algo == "ga":
+            import torch
+            from train_ga import PolicyNet
+            policy_model = PolicyNet()
+            policy_model.load_state_dict(
+                torch.load(args.model, map_location="cpu", weights_only=True)
+            )
+            policy_model.eval()
+        else:
+            from stable_baselines3 import PPO  # type: ignore[import-untyped]
+            policy_model = PPO.load(args.model, device="cpu")
+
+        vn_path = args.vecnormalize if algo == "ppo" else None
+        if algo == "ppo" and vn_path is None:
             model_dir = os.path.dirname(os.path.abspath(args.model))
             stem_full = os.path.splitext(os.path.abspath(args.model))[0]
 
@@ -243,6 +270,7 @@ def main():
                 policy_model,
                 n_episodes=args.episodes,
                 vec_normalize=vec_normalize,
+                algo=algo,
             )
             print("\nPolicy rollout complete. Close the window to exit.")
             while viewer.is_running():

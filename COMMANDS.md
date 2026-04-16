@@ -313,18 +313,30 @@ The JSON output has this shape (useful for plotting):
 }
 ```
 
-## 9. PPO Viewer
+## 9. Policy Viewer
+
+The algo is auto-detected from the file extension (`.zip` → PPO, `.pt` → GA).
+Pass `--algo` explicitly if needed.
 
 ```bash
-# Final model
+# Watch a trained PPO policy
 mjpython enjoy.py --phase 4 --model models/ppo_full_final.zip
 
-# Phase-tagged best model
-mjpython enjoy.py --phase 3 --model models/ppo_full_p3_best.zip
+# Watch a trained GA policy
+mjpython enjoy.py --phase 4 --model models/ga_full_final.pt
 
-# Explicit VecNormalize stats if auto-detection is not enough
+# Phase-tagged best models
+mjpython enjoy.py --phase 3 --model models/ppo_full_p3_best.zip
+mjpython enjoy.py --phase 3 --model models/ga_full_p3_best.pt
+
+# Explicit VecNormalize stats for PPO (if auto-detection fails)
 mjpython enjoy.py \
   --phase 4 \
   --model models/ppo_full_p4_best.zip \
   --vecnormalize models/ppo_full_p4_best_vecnormalize.pkl
+
+# Control number of episodes
+mjpython enjoy.py --phase 4 --model models/ga_full_final.pt --episodes 50
 ```
+
+GA policies do not use VecNormalize — observations are passed raw to the network.

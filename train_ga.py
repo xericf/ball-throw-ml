@@ -448,15 +448,30 @@ def main() -> None:
 
     # Initialize or resume from checkpoint
     if args.resume_from:
-        state = np.load(args.resume_from, allow_pickle=True).item()
-        population = state["population"].astype(np.float32)
-        start_generation = int(state["generation"])
-        start_phase = int(state.get("phase", args.start_phase))
+        loaded = np.load(args.resume_from, allow_pickle=True)
+        if loaded.ndim == 0:
+            # Population checkpoint: 0-d object array containing a dict
+            state = loaded.item()
+            population = state["population"].astype(np.float32)
+            start_generation = int(state["generation"])
+            start_phase = int(state.get("phase", args.start_phase))
+            print(
+                f"Resumed checkpoint: {args.resume_from}  |  Gen {start_generation}  |  Phase {start_phase}"
+            )
+        else:
+            # Best-genome file: plain 1-d float array — seed the whole population
+            # from this genome with small noise so evolution has a warm start.
+            seed_genome = loaded.astype(np.float32)
+            rng_init = np.random.default_rng(args.seed)
+            noise = rng_init.normal(0, 0.05, size=(args.pop_size, len(seed_genome))).astype(np.float32)
+            population = np.tile(seed_genome, (args.pop_size, 1)) + noise
+            start_generation = 0
+            start_phase = args.start_phase
+            print(
+                f"Warm-started from genome: {args.resume_from}  |  Phase {start_phase}"
+            )
         curriculum = CurriculumState(
             start_phase=start_phase, threshold=args.threshold
-        )
-        print(
-            f"Resumed: {args.resume_from}  |  Gen {start_generation}  |  Phase {start_phase}"
         )
     else:
         rng_init = np.random.default_rng(args.seed)
