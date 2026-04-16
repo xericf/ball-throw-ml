@@ -171,6 +171,7 @@ class CurriculumManagerCallback(BaseCallback):
                 old_ent = float(self.model.ent_coef)
                 new_ent = self.ENT_COEF_BY_PHASE.get(new_phase, self.ENT_COEF_DEFAULT)
                 self.model.ent_coef = new_ent
+                self.logger.record("curriculum/ent_coef", new_ent)
                 if self.verbose:
                     print(f"  [ent_coef] {old_ent:.4f} -> {new_ent:.4f}")
 
@@ -178,6 +179,7 @@ class CurriculumManagerCallback(BaseCallback):
 
     def _on_rollout_end(self) -> None:
         self.logger.record("curriculum/phase", float(self.current_phase))
+        self.logger.record("curriculum/ent_coef", float(self.model.ent_coef))
 
         if self._success_buf:
             success_rate = float(np.mean(self._success_buf))
@@ -347,6 +349,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
     p.add_argument("--wandb-project", type=str, default="ball-throw-ml")
+    p.add_argument("--wandb-entity", type=str, default=None, help="W&B entity (team or username)")
     p.add_argument(
         "--resume-from",
         type=str,
@@ -369,6 +372,7 @@ def main():
         else:
             wandb_run = wandb.init(
                 project=args.wandb_project,
+                entity=args.wandb_entity,
                 name=args.run_name,
                 config=vars(args),
                 sync_tensorboard=True,

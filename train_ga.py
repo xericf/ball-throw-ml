@@ -95,7 +95,7 @@ _worker_env: "OneShotFlightWrapper | None" = None
 
 
 def _evaluate_single(args: tuple) -> tuple:
-    """Worker: evaluate one genome for n_episodes, return (reward, success_rate, mean_dist).
+    """Worker: evaluate one genome for n_episodes, return (reward, success_rate, mean_dist, wall_hit_rate).
 
     Runs in a subprocess spawned by multiprocessing.Pool. Each worker owns its
     own MuJoCo environment instance — no shared state, spawn-safe.
@@ -122,6 +122,7 @@ def _evaluate_single(args: tuple) -> tuple:
 
     total_reward = 0.0
     success_count = 0
+    wall_hit_count = 0
     landing_dists = []
 
     with torch.no_grad():
@@ -133,13 +134,15 @@ def _evaluate_single(args: tuple) -> tuple:
             _, reward, _, _, info = _worker_env.step(action)
             total_reward += float(reward)
             success_count += int(info.get("success", False))
+            wall_hit_count += int(info.get("hit_wall", False))
             landing_dists.append(float(info.get("landing_dist", 999.0)))
 
     # No env.close() — _worker_env persists for the lifetime of this worker process.
     mean_reward = total_reward / n_episodes
     success_rate = success_count / n_episodes
     mean_dist = float(np.mean(landing_dists))
-    return mean_reward, success_rate, mean_dist
+    wall_hit_rate = wall_hit_count / n_episodes
+    return mean_reward, success_rate, mean_dist, wall_hit_rate
 
 
 def evaluate_population(
@@ -170,7 +173,8 @@ def evaluate_population(
     rewards = np.array([r[0] for r in results], dtype=np.float32)
     success_rates = np.array([r[1] for r in results], dtype=np.float32)
     mean_dists = np.array([r[2] for r in results], dtype=np.float32)
-    return rewards, success_rates, mean_dists
+    wall_hit_rates = np.array([r[3] for r in results], dtype=np.float32)
+    return rewards, success_rates, mean_dists, wall_hit_rates
 
 
 # ─── GA Operators ──────────────────────────────────────────────────────────────
@@ -496,7 +500,7 @@ def main() -> None:
         phase = curriculum.phase
 
         # ── Evaluate all genomes ───────────────────────────────────────────────
-        rewards, success_rates, mean_dists = evaluate_population(
+        rewards, success_rates, mean_dists, wall_hit_rates = evaluate_population(
             population,
             n_episodes=args.n_eval_episodes,
             phase=phase,
@@ -513,6 +517,9 @@ def main() -> None:
         mean_success = float(success_rates.mean())
         mean_dist = float(mean_dists.mean())
         best_success = float(success_rates[best_idx])
+        best_landing_dist = float(mean_dists[best_idx])
+        mean_wall_hit_rate = float(wall_hit_rates.mean())
+        population_diversity = float(np.mean(np.std(population, axis=0)))
 
         # ── Rank population (needed for both curriculum and evolution) ─────────
         ranked_idx = np.argsort(rewards)[::-1]
@@ -527,6 +534,9 @@ def main() -> None:
             "ga/elite_success_rate": elite_mean_success,
             "ga/best_success_rate": best_success,
             "ga/mean_landing_dist": mean_dist,
+            "ga/best_landing_dist": best_landing_dist,
+            "ga/wall_hit_rate": mean_wall_hit_rate * 100,
+            "ga/population_diversity": population_diversity,
             "ga/reward_std": float(rewards.std()),
             "curriculum/phase": phase,
             "curriculum/success_rate": mean_success,
@@ -549,11 +559,12 @@ def main() -> None:
             best_genome_overall = population[best_idx].copy()
 
         # ── Console output ─────────────────────────────────────────────────────
+        wall_str = f" | Wall {mean_wall_hit_rate * 100:4.1f}%" if phase >= 2 else ""
         print(
             f"Gen {generation:4d}/{args.num_generations} | Ph {phase} | "
             f"Rew mean={mean_reward:+7.2f} best={gen_best_reward:+7.2f} | "
-            f"Succ {mean_success * 100:5.1f}% | Dist {mean_dist:.2f}m | "
-            f"{elapsed:.1f}s"
+            f"Succ {mean_success * 100:5.1f}% | Dist {mean_dist:.2f}m"
+            f"{wall_str} | {elapsed:.1f}s"
         )
 
         # ── Curriculum update (elites only) ───────────────────────────────────
