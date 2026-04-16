@@ -89,20 +89,37 @@ def get_params(net: nn.Module) -> np.ndarray:
 
 # ─── Fitness Evaluation ────────────────────────────────────────────────────────
 
+# Persistent per-worker state — lives in each subprocess, not the main process.
+# Avoids re-initialising MuJoCo on every genome evaluation.
+_worker_env: "OneShotFlightWrapper | None" = None
+
 
 def _evaluate_single(args: tuple) -> tuple:
     """Worker: evaluate one genome for n_episodes, return (reward, success_rate, mean_dist).
 
     Runs in a subprocess spawned by multiprocessing.Pool. Each worker owns its
     own MuJoCo environment instance — no shared state, spawn-safe.
+
+    The environment is created once per worker on the first call and reused
+    thereafter. reset() calls mujoco.mj_resetData() in-place, so no state
+    bleeds between genome evaluations. On a curriculum phase change,
+    set_curriculum_phase() updates the live instance without recreating it.
     """
+    global _worker_env
     genome, n_episodes, phase, base_seed = args
+
+    if _worker_env is None:
+        _worker_env = OneShotFlightWrapper(
+            AerodynamicEnv(curriculum_phase=phase, disable_spin_before_phase=2)
+        )
+    elif _worker_env.env.curriculum_phase != phase:
+        # Phase changed — update the live instance; no MuJoCo reinit needed.
+        _worker_env.env.set_curriculum_phase(phase)
 
     net = PolicyNet()
     set_params(net, genome)
     net.eval()
 
-    env = OneShotFlightWrapper(AerodynamicEnv(curriculum_phase=phase, disable_spin_before_phase=2))
     total_reward = 0.0
     success_count = 0
     landing_dists = []
@@ -110,15 +127,15 @@ def _evaluate_single(args: tuple) -> tuple:
     with torch.no_grad():
         for ep in range(n_episodes):
             seed = (base_seed + ep) if base_seed is not None else None
-            obs, _ = env.reset(seed=seed)
+            obs, _ = _worker_env.reset(seed=seed)
             obs_t = torch.from_numpy(np.array(obs, dtype=np.float32)).unsqueeze(0)
             action = net(obs_t).squeeze(0).numpy()
-            _, reward, _, _, info = env.step(action)
+            _, reward, _, _, info = _worker_env.step(action)
             total_reward += float(reward)
             success_count += int(info.get("success", False))
             landing_dists.append(float(info.get("landing_dist", 999.0)))
 
-    env.close()
+    # No env.close() — _worker_env persists for the lifetime of this worker process.
     mean_reward = total_reward / n_episodes
     success_rate = success_count / n_episodes
     mean_dist = float(np.mean(landing_dists))
@@ -131,15 +148,24 @@ def evaluate_population(
     phase: int,
     base_seed: int,
     n_workers: int,
+    pool=None,
 ) -> tuple:
-    """Evaluate all genomes in parallel. Returns (rewards, success_rates, mean_dists)."""
+    """Evaluate all genomes in parallel. Returns (rewards, success_rates, mean_dists).
+
+    If *pool* is provided (a persistent multiprocessing.Pool), it is reused
+    directly and not closed here. Otherwise a fresh pool is created and torn
+    down each call (original behaviour, kept for standalone use).
+    """
     args = [
         (genome, n_episodes, phase, base_seed + i * 1000)
         for i, genome in enumerate(population)
     ]
-    ctx = mp.get_context("spawn")  # spawn is MuJoCo-safe (matches train_ppo.py)
-    with ctx.Pool(processes=n_workers) as pool:
+    if pool is not None:
         results = pool.map(_evaluate_single, args)
+    else:
+        ctx = mp.get_context("spawn")  # spawn is MuJoCo-safe (matches train_ppo.py)
+        with ctx.Pool(processes=n_workers) as p:
+            results = p.map(_evaluate_single, args)
 
     rewards = np.array([r[0] for r in results], dtype=np.float32)
     success_rates = np.array([r[1] for r in results], dtype=np.float32)
@@ -461,6 +487,10 @@ def main() -> None:
 
     print(f"\nTensorBoard: tensorboard --logdir {LOG_DIR}\n")
 
+    n_workers_actual = min(args.n_workers, args.pop_size)
+    _ctx = mp.get_context("spawn")
+    pool = _ctx.Pool(processes=n_workers_actual)
+
     for generation in range(start_generation, args.num_generations):
         t0 = time.monotonic()
         phase = curriculum.phase
@@ -471,7 +501,8 @@ def main() -> None:
             n_episodes=args.n_eval_episodes,
             phase=phase,
             base_seed=args.seed + generation * 10_000,
-            n_workers=min(args.n_workers, args.pop_size),
+            n_workers=n_workers_actual,
+            pool=pool,
         )
         elapsed = time.monotonic() - t0
 
@@ -533,11 +564,12 @@ def main() -> None:
         curriculum.update(elite_success)
         if curriculum.should_promote(min_samples=min_promotion_samples):
             old_phase = curriculum.phase
+            rolling_success_at_promotion = curriculum.mean_success()
             curriculum.promote()
             best_reward_this_phase = -np.inf  # reset per-phase best
             print(
                 f"  *** Curriculum: Phase {old_phase} → {curriculum.phase} "
-                f"(rolling success {curriculum.mean_success() * 100:.0f}%) ***"
+                f"(rolling success {rolling_success_at_promotion * 100:.0f}%) ***"
             )
             writer.add_scalar("curriculum/phase", curriculum.phase, generation)
             if use_wandb:
@@ -546,7 +578,7 @@ def main() -> None:
                     title=f"Phase {old_phase} → {curriculum.phase}",
                     text=(
                         f"Promoted at generation {generation}. "
-                        f"Rolling success: {curriculum.mean_success() * 100:.0f}%"
+                        f"Rolling success: {rolling_success_at_promotion * 100:.0f}%"
                     ),
                     level=wandb.AlertLevel.INFO,
                 )
@@ -576,6 +608,9 @@ def main() -> None:
                 population, generation + 1, curriculum.phase, args.run_name
             )
             print(f"  Checkpoint: {ckpt_path}")
+
+    pool.close()
+    pool.join()
 
     # ── Final save ────────────────────────────────────────────────────────────
     print(f"\nTraining complete. Best reward: {best_reward_overall:+.2f}")
