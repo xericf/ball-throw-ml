@@ -13,7 +13,7 @@ Furthermore, existing Reinforcement Learning (RL) physics benchmarks often rely 
 
 ## 2 Proposed Plan
 
-We plan to build a novel 3D continuous-control environment using MuJoCo to benchmark RL and genetic algorithms on complex, non-linear aerodynamic tasks. The environment is a 2-dimensional flat plane that consists of:
+We built a novel 3D continuous-control environment using MuJoCo to benchmark RL and genetic algorithms on complex, non-linear aerodynamic tasks. The environment is a 2-dimensional flat plane that consists of:
 
 - An agent with initial randomized orientation and position.
 - A randomized target disc.
@@ -21,7 +21,9 @@ We plan to build a novel 3D continuous-control environment using MuJoCo to bench
 
 Furthermore, the ground plane will be subjected to randomized biaxial tilts $(\pm15^{\circ})$, converting standard gravity into a dynamic drift vector. The agent will be trained to throw a small rigid body sphere directly on the target disc; it will be scored based on the initial landing spot's distance towards the center of the disc[cite: 15, 16].
 
-For controls, the agent will be a fixed point on the plane. It will have access to rotating its body in any direction and throwing the sphere with a set of parameters. To hit the target, the agent must output continuous actions for pitch, yaw, thrust, and angular velocity (spin) to utilize the Magnus effect, curving the projectile around the obstacle while compensating for the slope's gravitational pull[cite: 19, 20]. We will use **Stable Baselines3** to train an agent via **Proximal Policy Optimization (PPO)** alongside a gradient-free **Genetic Algorithm (GA)**, utilizing a curriculum learning approach.
+For controls, the agent is a fixed point on the plane. It outputs continuous actions for pitch, yaw, thrust, and angular velocity (spin) to utilize the Magnus effect, curving the projectile around the obstacle while compensating for the slope's gravitational pull[cite: 19, 20]. We use **Stable Baselines3** to train an agent via **Proximal Policy Optimization (PPO)** alongside a gradient-free **Genetic Algorithm (GA)**, both using a 5-phase curriculum learning approach.
+
+To simplify credit assignment, we wrap the environment in a `OneShotFlightWrapper` that converts each episode into a single-step contextual bandit: the agent outputs one action, the full ball flight is simulated internally by MuJoCo, and a terminal reward is returned. This eliminates hundreds of no-op steps and makes the task tractable for both PPO and GA without reward shaping across time.
 
 ## 3 Experimental Design
 
@@ -31,32 +33,43 @@ To ensure structured learning and rigorous benchmarking, the environment and tra
 
 To prevent policy collapse and encourage generalized learning, the agent will be provided with explicit, relative features rather than absolute global coordinates.
 
-**Observation Space:**
+**Observation Space (7-dimensional, egocentric):**
 
-- Target Delta: $(\Delta x_{t},\Delta z_{t})$
-- Obstacle Delta: $(\Delta x_{w},\Delta z_{w})$
-- Obstacle Width: $w$
-- Local Gravity Vector: $(g_{x},g_{z})$
+All observations are expressed in an egocentric frame with the agent at the origin and $+x$ pointing toward the target, preventing positional memorization.
+
+1. Target distance (scalar)
+2. Wall forward distance (projection of wall position along agent→target axis)
+3. Wall lateral offset (signed perpendicular component)
+4. Wall width $w$
+5. Gravity forward $g_x$ (gravity component along agent→target axis)
+6. Gravity lateral $g_y$ (gravity component perpendicular to agent→target axis)
+7. Gravity vertical $g_z$
 
 **Action Space:**
 The continuous action space $\mathcal{A}\in[-1,1]^{4}$ consists of pitch, yaw, forward thrust, and lateral angular velocity (spin).
 
 ### Curriculum Schedule
 
-We will implement a 3-phase curriculum to ensure the policy receives positive initial reward signals[cite: 34, 35]:
+We implemented a 5-phase curriculum to ensure the policy receives positive initial reward signals[cite: 34, 35]. Phase promotion occurs when the rolling success rate exceeds 75% for at least 50 consecutive episodes (PPO) or when elite-only success exceeds 75% (GA).
 
-1.  **Phase 1 (Basic Targeting):** Flat plane, no obstacle. The agent learns the parabolic mapping of distance to pitch and thrust.
-2.  **Phase 2 (Aerodynamic Bypassing):** Flat plane, randomized obstacle introduced. The agent learns to utilize the Magnus effect to curve around the wall[cite: 37, 38].
-3.  **Phase 3 (Dynamic Drift):** Tilted plane $(\pm15^{\circ})$, randomized obstacle. The agent learns to compensate for gravitational drift.
+| Phase | Target Range | Wall | Gravity |
+|-------|-------------|------|---------|
+| 0 | 5–10 m | None | Standard |
+| 1 | 9–20 m | None | Standard |
+| 2 | 9–20 m | Narrow (1.5–2 m wide) | Standard |
+| 3 | 9–20 m | Wide (1.5–4 m wide) | Standard |
+| 4 | 9–20 m | Wide (1.5–4 m wide) | Tilted $\pm15^{\circ}$ |
+
+Phases 0–1 build basic targeting and range estimation. Phase 2–3 introduce the obstacle and require spin to curve around the wall. Phase 4 adds biaxial gravity tilt, requiring simultaneous obstacle avoidance and gravitational drift compensation[cite: 37, 38].
 
 ### Algorithm Comparison and Benchmarking
 
-We will conduct a comparative analysis between **PPO** and a **Genetic Algorithm (GA)**. GAs may prove more robust in Phase 3 where dynamic gravity introduces severe non-linearities. Performance will be evaluated by:
+We conducted a comparative analysis between **PPO** and a **Genetic Algorithm (GA)**. The GA evolves a 7→64→64→4 MLP (Tanh activations, ~4,932 parameters per genome) using rank-based elitism: a population of 100 genomes is evaluated per generation, the top-20 elites survive unchanged, and offspring are produced by Gaussian mutation (10% of weights perturbed, $\sigma=0.1$). Crossover is disabled as weight-space crossover harms neuroevolution due to permutation symmetry. PPO uses the same MLP architecture (64→64 hidden layers) via Stable Baselines3's MlpPolicy with VecNormalize across 14 parallel environments. Performance is evaluated by:
 
 - Mean episodic reward.
 - $L_{2}$ distance error from the target center.
 - Success rate (percentage of shots landing within a 1-meter radius).
 
-## 4 Expected Contribution
+## 4 Contribution
 
-The primary contribution will be the open-source release of this environment as a mathematically rigorous benchmark for optimal control under non-linear aerodynamic conditions. Secondarily, we will provide an empirical evaluation of PPO's sample efficiency against a GA baseline. We aim to determine whether providing explicit gravitational vectors and relative obstacle width prevents policy collapse compared to a baseline trained without these features. Failure modes or negative results under extreme tilt parameters will be documented with full analysis.
+The primary contribution is the open-source release of this environment as a mathematically rigorous benchmark for optimal control under non-linear aerodynamic conditions. Secondarily, we provide an empirical evaluation of PPO's sample efficiency against a GA baseline across all 5 curriculum phases. We find that providing explicit egocentric gravitational vectors and relative obstacle observations is critical to preventing policy collapse. Failure modes and negative results — particularly the GA's prohibitive sample cost on Phase 2+ — are documented with full analysis.
