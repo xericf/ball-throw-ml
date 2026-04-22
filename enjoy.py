@@ -173,17 +173,34 @@ def main():
     if args.model is not None:
         # Auto-detect algo from file extension if not specified
         if algo is None:
-            algo = "ga" if args.model.endswith(".pt") else "ppo"
+            algo = "ga" if args.model.endswith((".pt", ".npy")) else "ppo"
 
         print(f"Loading {algo.upper()} policy from {args.model}")
 
         if algo == "ga":
             import torch
-            from train_ga import PolicyNet
+            from train_ga import PolicyNet, set_params
             policy_model = PolicyNet()
-            policy_model.load_state_dict(
-                torch.load(args.model, map_location="cpu", weights_only=True)
-            )
+
+            if args.model.endswith(".npy"):
+                loaded = np.load(args.model, allow_pickle=True)
+                if loaded.ndim == 0:
+                    # Population checkpoint — pick genome index 0 (first elite)
+                    state = loaded.item()
+                    genome = state["population"][0].astype(np.float32)
+                    print(
+                        f"  Population checkpoint: gen={state['generation']}, "
+                        f"phase={state['phase']} — using genome index 0 (first elite)"
+                    )
+                else:
+                    # Plain genome array
+                    genome = loaded.astype(np.float32)
+                set_params(policy_model, genome)
+            else:
+                policy_model.load_state_dict(
+                    torch.load(args.model, map_location="cpu", weights_only=True)
+                )
+
             policy_model.eval()
         else:
             from stable_baselines3 import PPO  # type: ignore[import-untyped]

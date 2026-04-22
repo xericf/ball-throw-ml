@@ -101,6 +101,16 @@ python train_ppo.py \
   --resume-from models/ppo_full_p2_300000_steps.zip \
   --timesteps 300000 \
   --run-name ppo_resume
+
+# Resume and continue the same W&B run (get <run-id> from the run's URL)
+python train_ppo.py \
+  --resume-from models/ppo_run_1_final.zip \
+  --start-phase 4 \
+  --timesteps 100000000 \
+  --n-envs 14 \
+  --run-name ppo_run_1 \
+  --wandb --wandb-project ball-throw-ml --wandb-entity dylan-lau \
+  --wandb-resume-id <run-id>
 ```
 
 Key CLI flags:
@@ -118,6 +128,10 @@ Key CLI flags:
 | `--batch-size` | `256` | PPO minibatch size |
 | `--lr` | `3e-4` | Adam learning rate |
 | `--resume-from` | `None` | checkpoint `.zip` to resume from |
+| `--wandb` | off | enable Weights & Biases logging |
+| `--wandb-project` | `ball-throw-ml` | W&B project name |
+| `--wandb-entity` | `None` | W&B entity / team |
+| `--wandb-resume-id` | `None` | W&B run ID to resume (continues same chart line) |
 
 Saved artifacts for `--run-name NAME`:
 
@@ -166,6 +180,15 @@ python train_ga.py --resume-from models/ga_full_p1_gen200_checkpoint.npy --run-n
 
 # Enable W&B logging
 python train_ga.py --run-name ga_full --wandb --wandb-project ball-throw-ml
+
+# Resume and continue the same W&B run (get <run-id> from the run's URL)
+python train_ga.py \
+  --resume-from models/ga_run_1_p4_gen52100_checkpoint.npy \
+  --num-generations 17280 \
+  --pop-size 100 --n-eval-episodes 30 --n-workers 8 \
+  --run-name ga_run_1 \
+  --wandb --wandb-project ball-throw-ml --wandb-entity dylan-lau \
+  --wandb-resume-id <run-id>
 ```
 
 Key CLI flags:
@@ -189,6 +212,7 @@ Key CLI flags:
 | `--wandb` | off | enable Weights & Biases logging |
 | `--wandb-project` | `ball-throw-ml` | W&B project name |
 | `--wandb-entity` | `None` | W&B entity / team |
+| `--wandb-resume-id` | `None` | W&B run ID to resume (continues same chart line) |
 
 Saved artifacts for `--run-name NAME`:
 
@@ -322,8 +346,11 @@ Pass `--algo` explicitly if needed.
 # Watch a trained PPO policy
 mjpython enjoy.py --phase 4 --model models/ppo_full_final.zip
 
-# Watch a trained GA policy
+# Watch a trained GA policy (.pt)
 mjpython enjoy.py --phase 4 --model models/ga_full_final.pt
+
+# Watch a GA population checkpoint (.npy) — uses genome index 0 (first elite)
+mjpython enjoy.py --phase 4 --model models/ga_run_1_p4_gen52100_checkpoint.npy
 
 # Phase-tagged best models
 mjpython enjoy.py --phase 3 --model models/ppo_full_p3_best.zip

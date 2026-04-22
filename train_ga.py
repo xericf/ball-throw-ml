@@ -393,6 +393,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="W&B entity/team (default: your default entity)",
     )
+    p.add_argument(
+        "--wandb-resume-id",
+        type=str,
+        default=None,
+        help="W&B run ID to resume (found in the run's URL)",
+    )
     return p.parse_args()
 
 
@@ -421,6 +427,8 @@ def main() -> None:
                 project=args.wandb_project,
                 entity=args.wandb_entity,
                 name=args.run_name,
+                id=args.wandb_resume_id,
+                resume="must" if args.wandb_resume_id else ("allow" if args.resume_from else False),
                 config={
                     "pop_size": args.pop_size,
                     "num_generations": args.num_generations,
@@ -436,7 +444,6 @@ def main() -> None:
                     "algorithm": "neuroevolution",
                     "policy": "7-64-64-4-tanh",
                 },
-                resume="allow" if args.resume_from else False,
                 tags=["ga", f"phase{args.start_phase}"],
             )
 

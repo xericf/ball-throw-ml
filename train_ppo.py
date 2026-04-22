@@ -350,6 +350,7 @@ def parse_args():
     p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
     p.add_argument("--wandb-project", type=str, default="ball-throw-ml")
     p.add_argument("--wandb-entity", type=str, default=None, help="W&B entity (team or username)")
+    p.add_argument("--wandb-resume-id", type=str, default=None, help="W&B run ID to resume (found in the run's URL)")
     p.add_argument(
         "--resume-from",
         type=str,
@@ -374,6 +375,8 @@ def main():
                 project=args.wandb_project,
                 entity=args.wandb_entity,
                 name=args.run_name,
+                id=args.wandb_resume_id,
+                resume="must" if args.wandb_resume_id else None,
                 config=vars(args),
                 sync_tensorboard=True,
             )
