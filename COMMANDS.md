@@ -367,3 +367,37 @@ mjpython enjoy.py --phase 4 --model models/ga_full_final.pt --episodes 50
 ```
 
 GA policies do not use VecNormalize — observations are passed raw to the network.
+
+## 10. Generating Figures
+
+Figures for the paper writeup live in `project-writeup/`. Cached wandb data is
+committed to `project-writeup/data/` so figures can be regenerated without a
+wandb account.
+
+```bash
+# Regenerate all figures from cached CSVs (no wandb needed)
+python project-writeup/generate_figures.py
+
+# Re-download wandb history first, then regenerate
+python project-writeup/generate_figures.py --fetch
+```
+
+Outputs written to `project-writeup/`:
+
+| file | description |
+| ---- | ----------- |
+| `fig_ppo_training.{pdf,png}` | PPO training curves with phase bands |
+| `fig_ga_training.{pdf,png}` | GA elite vs population curves with phase bands |
+| `fig_comparison.{pdf,png}` | PPO vs GA final performance bar charts |
+
+Cached data:
+
+| file | description |
+| ---- | ----------- |
+| `data/ppo_history.csv` | 5 000-row wandb history for `ppo_run_1` (id: `ezrm5r57`) |
+| `data/ga_history.csv` | 5 000-row wandb history for `ga_run_1` (id: `etnx7oqi`) |
+
+**Note on PPO data.** `ppo_run_1` was resumed mid-training with `--start-phase 4`,
+so wandb logged two segments to the same run. The training figure uses only the
+original segment (`_step < 84888`); the comparison figure uses the phase-4
+continuation for final metrics.
